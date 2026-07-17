@@ -1,0 +1,3 @@
+# Install in a separate environment from the core profile.
+# Model weights are not included and require a separate license/artifact preflight.
+surya-ocr==0.21.2

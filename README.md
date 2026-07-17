@@ -4,15 +4,18 @@ A public collection of Agent Skills maintained by [Kolega](https://github.com/ko
 Skills are self-contained folders of instructions and optional resources that give an AI
 agent reliable workflows for specialized tasks.
 
-This repository follows the open [Agent Skills specification](https://agentskills.io/specification).
-It takes inspiration from [Anthropic's skills collection](https://github.com/anthropics/skills)
-while adding repository-level validation, deterministic packaging, tests, and CI.
+This repository follows the open [Agent Skills specification](https://agentskills.io/specification)
+and adds repository-level validation, deterministic packaging, tests, and CI.
 
 ## Catalog
 
 | Skill | Use it for |
 | --- | --- |
+| [`docx`](skills/docx/SKILL.md) | Creating, inspecting, editing, and converting Microsoft Word `.docx` documents |
+| [`pdf`](skills/pdf/SKILL.md) | PDF-native extraction, creation, page operations, forms, security, conversion, and explicit OCR routing |
+| [`pptx`](skills/pptx/SKILL.md) | Building, inspecting, editing, and converting Microsoft PowerPoint `.pptx` presentations |
 | [`skill-authoring`](skills/skill-authoring/SKILL.md) | Creating, revising, and reviewing standards-compliant Agent Skills |
+| [`xlsx`](skills/xlsx/SKILL.md) | Creating, inspecting, editing, cleaning, summarizing, and converting Microsoft Excel `.xlsx` workbooks |
 
 Every directory under [`skills/`](skills/) is an independently installable skill. A skill
 contains a required `SKILL.md` and may include:
@@ -27,12 +30,40 @@ skill-name/
 
 ## Use a skill
 
-Install a complete directory from `skills/` through your Kolega client's skill-management
-flow, or copy it into one of the project or user skill directories configured by your
+Install a complete directory from `skills/` through any Agent Skills-compatible client's
+skill-management flow, or copy it into a project or user skill directory configured by that
 client. Keep the directory intact: resources are referenced relative to the skill root.
 
-Once installed, describe the task normally. Kolega uses each skill's `name` and
+Once installed, describe the task normally. A compatible client uses each skill's `name` and
 `description` to decide when to load its instructions.
+
+### Document skill runtimes
+
+Each document skill is independently installable and carries its own pinned Python runtime
+requirements. The skill selects any available Python 3.11+ interpreter rather than assuming
+that `python` or `python3` has a particular meaning. Before installing anything, it tells the
+user what is missing, where it will be installed, and which installer it intends to use.
+Pinned Python packages are normally installed through the selected interpreter's `-m pip`.
+Python itself and external applications use the platform's normal package manager, with
+Homebrew preferred on macOS when available. A local environment is a fallback when direct
+installation is blocked; it is not required.
+
+- DOCX-to-PDF and PPTX-to-PDF conversion optionally use a separately installed LibreOffice
+  `soffice` executable. The source-format skill owns these conversions; use `pdf` for
+  operations on an existing PDF.
+- PDF OCR is optional and never runs automatically. Use `ocr-plan` first, then explicitly
+  choose an independently installed engine and locally provisioned model or language data:
+  Surya for modern layout-aware extraction when its model terms and runtime are suitable,
+  PaddleOCR as the no-GPU fallback, or Tesseract as an explicit last-resort fallback when the
+  preferred engines are unavailable. Tesseract is best suited to clean printed text on CPU
+  when flat output is acceptable.
+- No OCR engine, model weights, language data, or LibreOffice binary is bundled. Optional
+  runtimes are installed only after the skill tells the user about the intended system
+  change. OCR models and language data remain explicit, reviewed local artifacts and are
+  never downloaded implicitly.
+- Surya's code is Apache-2.0, but its current model weights use modified AI Pubs Open Rail-M
+  terms with commercial-use eligibility limits. Review and approve the selected model's
+  terms before provisioning it. Verify model and language-data licenses for every OCR engine.
 
 ## Create a skill
 

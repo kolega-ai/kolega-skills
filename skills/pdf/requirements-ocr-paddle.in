@@ -1,0 +1,4 @@
+# Install in a separate CPU environment from the core profile.
+# Paddle model directories are not included and must be provisioned separately.
+paddleocr==3.7.0
+paddlepaddle==3.3.1
