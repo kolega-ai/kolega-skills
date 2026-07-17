@@ -29,7 +29,7 @@ XLSX_PYTHON="/path/to/selected/python"
 
 Check the required imports. Before installing anything, tell the user what is missing, what
 will be installed, the target scope, and the installer. Use the selected interpreter's
-`-m pip` with the pinned file:
+`-m pip` with the requirements file:
 
 ```bash
 "$XLSX_PYTHON" -m pip install -r "$SKILL_ROOT/requirements.txt"
@@ -488,7 +488,7 @@ cleanup.
 | 0 | success | Verified operation completed. |
 | 2 | `bad_input` | Missing, malformed, invalid encoding/name/style/value, unknown schema key, wrong extension/range, or conflicting flags. |
 | 3 | `unsupported_operation` | Macro/encryption, unsupported format/operation, or atomic-directory constraint. |
-| 4 | `missing_dependency` | Pinned Python environment is not installed. |
+| 4 | `missing_dependency` | Required Python packages are not installed. |
 | 5 | `ambiguous_edit` | Unsafe dependency, duplicate name, or unresolved replacement choice. |
 | 6 | `resource_limit` | Package/member/cell/inspection bound exceeded. |
 | 7 | `licensing_precondition` | Reserved common-contract status; no XLSX core operation currently uses it. |

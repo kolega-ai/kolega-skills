@@ -1,10 +1,2 @@
-# Fully pinned runtime dependency graph for Python 3.11+.
-# Direct dependencies
-openpyxl==3.1.5
-pandas==3.0.3
-
-# Transitive dependencies
-et_xmlfile==2.0.0
-numpy==2.4.6
-python-dateutil==2.9.0.post0
-six==1.17.0
+openpyxl~=3.1
+pandas~=3.0

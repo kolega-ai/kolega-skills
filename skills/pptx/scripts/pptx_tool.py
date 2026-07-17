@@ -60,7 +60,7 @@ except ModuleNotFoundError as exc:
 
 
 SCHEMA_VERSION = 1
-PINNED_PPTX_VERSION = "1.0.2"
+SUPPORTED_PPTX_MAJOR = 1
 MAX_SOURCE_BYTES = 100 * 1024 * 1024
 MAX_MEMBERS = 5_000
 MAX_EXPANDED_BYTES = 512 * 1024 * 1024
@@ -769,21 +769,25 @@ def _pptx_source_snapshot(path: Path) -> Generator[PptxSourceSnapshot, None, Non
         yield PptxSourceSnapshot(original, snapshot_path, digest, report)
 
 
-class PinnedOoxmlAdapter:
+class OoxmlAdapter:
     """Contain private python-pptx/OOXML access required by unsupported public operations."""
 
     @staticmethod
-    def require_version() -> None:
-        if pptx.__version__ != PINNED_PPTX_VERSION:
+    def require_supported_version() -> None:
+        try:
+            major = int(pptx.__version__.partition(".")[0])
+        except ValueError:
+            major = -1
+        if major != SUPPORTED_PPTX_MAJOR:
             raise ToolError(
                 "missing_dependency",
-                "private OOXML adapter requires the pinned python-pptx version",
-                {"required": PINNED_PPTX_VERSION, "actual": pptx.__version__},
+                "private OOXML adapter requires a supported python-pptx version",
+                {"supported": ">=1,<2", "actual": pptx.__version__},
             )
 
     @classmethod
     def remove_slide(cls, presentation: Any, index: int) -> None:
-        cls.require_version()
+        cls.require_supported_version()
         slide_id_list = presentation.slides._sldIdLst
         slide_id = slide_id_list[index]
         presentation.part.drop_rel(slide_id.rId)
@@ -791,7 +795,7 @@ class PinnedOoxmlAdapter:
 
     @classmethod
     def reorder_slides(cls, presentation: Any, ordered_ids: list[int]) -> None:
-        cls.require_version()
+        cls.require_supported_version()
         slide_id_list = presentation.slides._sldIdLst
         by_id = {int(element.id): element for element in list(slide_id_list)}
         for element in list(slide_id_list):
@@ -801,12 +805,12 @@ class PinnedOoxmlAdapter:
 
     @classmethod
     def paragraph_has_field(cls, paragraph: Any) -> bool:
-        cls.require_version()
+        cls.require_supported_version()
         return bool(paragraph._p.xpath("./a:fld"))
 
     @classmethod
     def replace_picture_relationship(cls, picture: Any, blob: bytes) -> None:
-        cls.require_version()
+        cls.require_supported_version()
         old_relationship_id = picture._element.blip_rId
         _, new_relationship_id = picture.part.get_or_add_image_part(io.BytesIO(blob))
         picture._element.blipFill.blip.set(f"{{{R_NS}}}embed", new_relationship_id)
@@ -1036,7 +1040,7 @@ def _text_frame_info(text_frame: Any) -> dict[str, Any]:
                 "level": paragraph.level,
                 "alignment": _enum_name(paragraph.alignment),
                 "runs": runs,
-                "contains_field": PinnedOoxmlAdapter.paragraph_has_field(paragraph),
+                "contains_field": OoxmlAdapter.paragraph_has_field(paragraph),
             }
         )
     return {
@@ -1981,7 +1985,7 @@ def create_pptx(
         if template is not None and not keep_template_slides:
             while len(presentation.slides):
                 before = _presentation_slide_ids(presentation)
-                PinnedOoxmlAdapter.remove_slide(presentation, len(presentation.slides) - 1)
+                OoxmlAdapter.remove_slide(presentation, len(presentation.slides) - 1)
                 expected = before[:-1]
                 graph_ordinal += 1
                 presentation, checkpoint = _checkpoint_graph_mutation(
@@ -2551,7 +2555,7 @@ def _replace_image(
     selected_key = (int(slide.slide_id), int(shape.shape_id))
     if selected_key not in before_hashes:
         raise ToolError("internal_error", "selected picture was not present in the picture map")
-    PinnedOoxmlAdapter.replace_picture_relationship(shape, image.data)
+    OoxmlAdapter.replace_picture_relationship(shape, image.data)
     after_hashes = _picture_hashes(presentation)
     if set(after_hashes) != set(before_hashes) or after_hashes.get(selected_key) != image.sha256:
         raise ToolError(
@@ -2636,7 +2640,7 @@ def edit_pptx(
                         expected = expected[:]
                         expected.remove(int(slide.slide_id))
                         expected.insert(index, int(slide.slide_id))
-                        PinnedOoxmlAdapter.reorder_slides(presentation, expected)
+                        OoxmlAdapter.reorder_slides(presentation, expected)
                         counts["slides_reordered"] += 1
                 graph_ordinal += 1
                 presentation, checkpoint = _checkpoint_graph_mutation(
@@ -2672,7 +2676,7 @@ def edit_pptx(
                 index, _ = _select_one_slide(presentation, operation.get("slide"))
                 before = _presentation_slide_ids(presentation)
                 expected = before[:index] + before[index + 1 :]
-                PinnedOoxmlAdapter.remove_slide(presentation, index)
+                OoxmlAdapter.remove_slide(presentation, index)
                 graph_ordinal += 1
                 presentation, checkpoint = _checkpoint_graph_mutation(
                     presentation,
@@ -2701,7 +2705,7 @@ def edit_pptx(
                         "reorder slide_ids must contain every current slide ID exactly once",
                         {"current": before, "requested": ordered},
                     )
-                PinnedOoxmlAdapter.reorder_slides(presentation, ordered)
+                OoxmlAdapter.reorder_slides(presentation, ordered)
                 graph_ordinal += 1
                 presentation, checkpoint = _checkpoint_graph_mutation(
                     presentation,

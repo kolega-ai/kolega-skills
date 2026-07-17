@@ -55,8 +55,9 @@ and then run it only through an explicit `--engine tesseract` invocation.
 
 ### Surya
 
-Use Surya for modern layout-aware work. The pinned adapter targets `surya-ocr==0.21.2`
-and the official `surya_ocr` CLI result schema. It accepts only major version 0.
+Use Surya for modern layout-aware work. The version-aware adapter supports the declared
+`surya-ocr` range and the official `surya_ocr` CLI result schema. It accepts only major
+version 0.
 
 Surya code is Apache-2.0. Its current model weights are different: the official project
 states that they use a **modified AI Pubs Open Rail-M license** and are free for research,
@@ -89,10 +90,10 @@ version/checksum/license preflight passes.
 ### PaddleOCR
 
 Use PaddleOCR as an operator-selected or planner-recommended no-GPU alternative, never an
-automatic runtime fallback. Install it only from the pinned pip profile
-`requirements-ocr-paddle.txt`; do not use Homebrew or apt Paddle packages. The pinned
-profile contains `paddleocr==3.7.0`, `paddlepaddle==3.3.1`, and their pinned transitives.
-The adapter accepts only PaddleOCR major version 3.
+automatic runtime fallback. Install it only from the declared pip profile
+`requirements-ocr-paddle.txt`; do not use Homebrew or apt Paddle packages. The profile
+supports PaddleOCR major version 3 and PaddlePaddle major version 3; pip resolves their
+transitives. The adapter accepts only PaddleOCR major version 3.
 
 The official CLI prints a human-oriented representation and does not document strict JSON
 stdout. Therefore the tool launches the selected profile's Python interpreter as a

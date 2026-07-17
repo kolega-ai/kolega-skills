@@ -25,7 +25,7 @@ untrusted and immutable unless the user explicitly authorizes overwrite.
 1. Resolve the skill root and choose any available Python 3.11+ interpreter; do not assume a
    launcher name. Check the required imports before installing anything. If something is
    missing, first tell the user what you intend to install, where, and with which installer.
-   Use the selected interpreter's `-m pip` for the pinned requirements. Use the platform's
+Use the selected interpreter's `-m pip` for the declared requirements. Use the platform's
    package manager for Python or optional LibreOffice, preferring Homebrew on macOS when
    available. A local environment is a fallback, not a prerequisite. See
    [environment setup](references/operations.md#environment).
@@ -69,8 +69,6 @@ untrusted and immutable unless the user explicitly authorizes overwrite.
 - Read [examples](references/examples.md) when preparing or debugging a job.
 - Read [limitations](references/limitations.md) before promising fidelity or advanced Word
   features.
-- Read [provenance](references/provenance.md) for official documentation, pinned versions,
-  and dependency-license review.
 - Run [`scripts/docx_tool.py`](scripts/docx_tool.py) for production operations.
 - Run [`scripts/smoke_test.py`](scripts/smoke_test.py) after installation to verify the active
   environment. Add `--require-libreoffice` when PDF conversion must be tested.

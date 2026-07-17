@@ -9,7 +9,7 @@
 - [Expected assertions](#expected-assertions)
 
 Before using these examples, select `PPTX_PYTHON`, resolve `SKILL_ROOT` and `PPTX_TOOL` to
-absolute paths, and install the pinned runtime as described in
+absolute paths, and install the declared runtime as described in
 [operations](references/operations.md#runtime-prerequisite-and-installation).
 
 ## Create and inspect

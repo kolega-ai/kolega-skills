@@ -29,7 +29,7 @@ test -f "$SKILL_ROOT/requirements.txt"
 
 Check the required imports. Before installing anything, tell the user what is missing, what
 will be installed, the target scope, and the installer. Use the selected interpreter's
-`-m pip` with the pinned file:
+`-m pip` with the requirements file:
 
 ```bash
 "$DOCX_PYTHON" -m pip install -r "$SKILL_ROOT/requirements.txt"

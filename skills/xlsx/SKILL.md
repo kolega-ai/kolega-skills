@@ -2,7 +2,7 @@
 name: xlsx
 description: Create, inspect, extract, edit, clean, summarize, and convert Microsoft Excel .xlsx workbooks, including formulas, styles, tables, conditional formatting, validation, native charts, and CSV/TSV interchange. Use for spreadsheet artifact work where workbook semantics or safe tabular conversion matter; do not use for legacy .xls, macro-enabled .xlsm, PDF-native work, or general analysis that does not require a spreadsheet artifact.
 license: Apache-2.0
-compatibility: Requires Python 3.11+ and the packages pinned in requirements.txt.
+compatibility: Requires Python 3.11+ and the packages declared in requirements.txt.
 metadata:
   author: Kolega
   version: "1.0"
@@ -20,7 +20,7 @@ macro-enabled content, and verify every workbook after saving.
    3.11+ interpreter; do not assume a launcher name. Check the required imports before
    installing anything. If something is missing, first tell the user what you intend to
    install, where, and with which installer. Use the selected interpreter's `-m pip` for the
-   pinned requirements. Use the platform's package manager for Python itself, preferring
+declared requirements. Use the platform's package manager for Python itself, preferring
    Homebrew on macOS when available. A local environment is a fallback, not a prerequisite.
    Read the runtime section in [operations](references/operations.md).
 2. **Inventory before mutation.** Run `inspect` and review sheet order and visibility, used
@@ -40,7 +40,7 @@ macro-enabled content, and verify every workbook after saving.
 5. **Write to a new destination.** A destination must differ from the source unless
    `--overwrite` is explicit. Existing destinations also require `--overwrite`.
 6. **Review the JSON result.** Require `"ok": true`, a reopened verification result, expected
-   sheet order/counts, warnings, output paths, and pinned library versions.
+sheet order/counts, warnings, output paths, and library versions.
 7. **Inspect the output again.** Confirm workbook structure and content. If formulas exist,
    open in a calculation application when fresh results are required; calculation flags
    request recalculation but do not prove it happened.
@@ -79,8 +79,6 @@ flags.
   assertions, and failure paths.
 - Read [limitations](references/limitations.md) before working with formulas, pivots,
   external links, unsupported OOXML, or renderer-specific output.
-- Read [provenance](references/provenance.md) for official specifications, package versions,
-  and dependency licenses.
 - Run `"$XLSX_PYTHON" "$SKILL_ROOT/scripts/smoke_test.py"` after installation. It creates every
   fixture in a temporary directory and exercises create, inspect, extract, edit, clean,
   summarize,

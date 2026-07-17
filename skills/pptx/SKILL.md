@@ -18,7 +18,7 @@ write to a distinct destination, and use `--overwrite` only when replacement is 
 1. **Prepare the runtime.** Resolve the skill root and choose any available Python 3.11+
    interpreter; do not assume a launcher name. Check the required imports before installing
    anything. If something is missing, first tell the user what you intend to install, where,
-   and with which installer. Use the selected interpreter's `-m pip` for the pinned
+and with which installer. Use the selected interpreter's `-m pip` for the declared
    requirements. Use the platform's package manager for Python or optional LibreOffice,
    preferring Homebrew on macOS when available. A local environment is a fallback, not a
    prerequisite. See
@@ -69,7 +69,5 @@ write to a distinct destination, and use `--overwrite` only when replacement is 
 - Read [examples](references/examples.md) before authoring a new job or diagnosing a failure.
 - Read [limitations](references/limitations.md) before promising fidelity or editing unsupported
   presentation features.
-- Read [provenance](references/provenance.md) when reviewing specifications, dependencies, or
-  licenses.
 - Run `"$PPTX_PYTHON" "$SKILL_ROOT/scripts/smoke_test.py"` after installation. Add
   `--require-libreoffice` only when PDF conversion must also be exercised.

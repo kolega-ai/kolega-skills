@@ -54,7 +54,7 @@ try:
     from openpyxl.workbook.defined_name import DefinedName
     from openpyxl.worksheet.datavalidation import DataValidation
     from openpyxl.worksheet.table import Table, TableStyleInfo
-except ImportError as exc:  # pragma: no cover - exercised only without the pinned environment
+except ImportError as exc:  # pragma: no cover - exercised only without required dependencies
     IMPORT_ERROR = exc
 
 
@@ -129,7 +129,7 @@ def ensure_dependencies() -> None:
     if IMPORT_ERROR is not None:
         fail(
             "missing_dependency",
-            "Install the skill's pinned requirements before running the tool.",
+            "Install the skill's requirements before running the tool.",
             import_error=str(IMPORT_ERROR),
             requirements="requirements.txt",
         )

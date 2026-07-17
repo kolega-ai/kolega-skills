@@ -12,7 +12,7 @@
 ## Install and smoke test
 
 Follow [Runtime and JSON contract](references/operations.md#runtime-and-json-contract) to select
-`XLSX_PYTHON`, notify the user before any installation, and install the pinned requirements.
+`XLSX_PYTHON`, notify the user before any installation, and install the declared requirements.
 Then resolve the skill root to an absolute path and run:
 
 ```bash
@@ -280,7 +280,7 @@ after all numbered sheet files are written and reopened.
 
 ## Expected artifact assertions
 
-The following independent check uses only the pinned environment:
+The following independent check uses only the declared environment:
 
 ```bash
 "$XLSX_PYTHON" - "$work/summarized.xlsx" <<'PY'

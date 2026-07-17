@@ -12,7 +12,7 @@
 
 All paths in JSON are relative to the JSON file. Before using these examples, follow
 [environment setup](references/operations.md#environment) to set absolute `SKILL_ROOT` and
-verified `DOCX_PYTHON` values and install any missing pinned requirements. Installation
+verified `DOCX_PYTHON` values and install any missing requirements. Installation
 guidance is intentionally kept in operations rather than repeated here.
 
 ## End-to-end create, inspect, edit, and extract

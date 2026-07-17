@@ -25,7 +25,7 @@ PDF_PYTHON="/path/to/selected/python"
 
 Check the required imports. Before installing anything, tell the user what is missing, what
 will be installed, the target scope, and the installer. Use the selected interpreter's
-`-m pip` with the pinned core file:
+`-m pip` with the core requirements file:
 
 ```bash
 "$PDF_PYTHON" -m pip install -r "$SKILL_ROOT/requirements.txt"
@@ -43,7 +43,7 @@ metadata. Verify the CLI with the same selected interpreter:
 ```
 
 For OCR, select exactly one engine and tell the user about its dependencies before installing
-them. Install only that engine's pinned profile:
+them. Install only that engine's declared profile:
 
 ```bash
 "$ENGINE_PYTHON" -m pip install -r "$ENGINE_REQUIREMENTS"

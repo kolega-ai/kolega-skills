@@ -44,7 +44,7 @@ or execute them.
 - Shape z-order editing, grouping/ungrouping, connector repair, and arbitrary relationship editing
   are outside the interface.
 
-Slide removal/reordering uses a small adapter pinned to the declared `python-pptx` version because
+Slide removal/reordering uses a small adapter constrained to the supported `python-pptx` range because
 the library has no public mutation API for those operations. Every slide-graph mutation is
 checkpointed and reopened, but structural verification cannot prove rendering equivalence.
 

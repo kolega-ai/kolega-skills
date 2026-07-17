@@ -2,7 +2,7 @@
 name: pdf
 description: Create, inspect, extract, edit, secure, reorganize, and convert PDF-native documents; diagnose scanned or hybrid PDFs and run explicitly selected local OCR. Use for PDF page operations, forms, metadata, encryption, spatial text or table extraction, image/text-to-PDF generation, and scanned-PDF OCR planning. Do not use for authoring DOCX, XLSX, or PPTX source files before PDF export.
 license: Apache-2.0
-compatibility: Requires Python 3.11+ and the pinned core environment. OCR engines, model weights, language data, and compatible acceleration are optional external capabilities installed separately.
+compatibility: Requires Python 3.11+ and the declared core environment. OCR engines, model weights, language data, and compatible acceleration are optional external capabilities installed separately.
 metadata:
   author: Kolega
   version: "1.0"
@@ -38,7 +38,7 @@ or searchable OCR PDFs.
 1. Resolve the skill root and choose any available Python 3.11+ interpreter; do not assume a
    launcher name. Check the required imports before installing anything. If something is
    missing, first tell the user what you intend to install, where, and with which installer.
-   Use the selected interpreter's `-m pip` for the pinned core or explicitly selected OCR
+Use the selected interpreter's `-m pip` for the declared core or explicitly selected OCR
    profile. Use the platform's package manager for Python and external OCR runtimes,
    preferring Homebrew on macOS when available. A local environment is a fallback, not a
    prerequisite. See
@@ -98,8 +98,6 @@ OCR.
 - [OCR](references/ocr.md): decision matrix, artifact preflight, adapters, and normalized
   output.
 - [Limitations](references/limitations.md): fidelity and security boundaries.
-- [Provenance](references/provenance.md): official specifications, documentation, pinned
-  versions, and license review.
 - `scripts/smoke_test.py`: generated-fixture core smoke test; add `--ocr-engine` only in a
   separately prepared optional engine environment.
 

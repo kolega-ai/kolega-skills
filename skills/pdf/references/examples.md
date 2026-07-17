@@ -238,7 +238,7 @@ an installed executable.
 
 After the operator explicitly selects Surya, follow the OCR installation procedure in
 [Operations](references/operations.md#environment-and-json-contract). Announce the missing
-dependencies, exact pinned profile, scope, and mechanism, then install only
+dependencies, declared profile, scope, and mechanism, then install only
 `requirements-ocr-surya.txt` through the selected `ENGINE_PYTHON`. Do not merge it with the
 Paddle profile. Resolve the installed CLI to an absolute `ENGINE_EXECUTABLE`.
 
@@ -291,11 +291,11 @@ output path.
 
 After the operator explicitly selects PaddleOCR, follow the OCR installation procedure in
 [Operations](references/operations.md#environment-and-json-contract). Announce the missing
-dependencies, exact pinned profile, scope, and mechanism, then install only
+dependencies, declared profile, scope, and mechanism, then install only
 `requirements-ocr-paddle.txt` through the selected `ENGINE_PYTHON`.
 
 Paddle remains pip-profile based: do not install PaddleOCR with Homebrew or apt, do not
-change the profile pins, and do not merge this environment with core or Surya. Installing
+change the profile constraints, and do not merge this environment with core or Surya. Installing
 the Python profile does not provision or approve models. Models must remain reviewed local
 artifacts; the OCR command must never download them.
 

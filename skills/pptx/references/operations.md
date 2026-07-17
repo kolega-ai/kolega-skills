@@ -29,7 +29,7 @@ PPTX_SMOKE_TEST="$SKILL_ROOT/scripts/smoke_test.py"
 
 Check the required imports. Before installing anything, tell the user what is missing, what
 will be installed, the target scope, and the installer. Use the selected interpreter's
-`-m pip` with the pinned file:
+`-m pip` with the requirements file:
 
 ```bash
 "$PPTX_PYTHON" -m pip install -r "$SKILL_ROOT/requirements.txt"
@@ -125,8 +125,8 @@ A create job has this top-level shape:
 
 `template` is optional. Without one, `python-pptx`'s default presentation is used. With one, the
 template's masters and layouts are retained. Existing template slides are removed by default;
-set `keep_template_slides` to `true` to retain them. Template removal uses the same pinned,
-reopen-verified relationship adapter as edit operations.
+set `keep_template_slides` to `true` to retain them. Template removal uses the same
+version-aware, reopen-verified relationship adapter as edit operations.
 
 A slide may select a `layout` with either `{"name": "Exact Layout Name"}` or `{"index": 1}`.
 If `layout` is omitted, layout index 1 is used and must exist. Duplicate layout names are
@@ -165,8 +165,8 @@ Supported actions:
 
 After every add, remove, or reorder, the adapter saves a checkpoint, runs safe preflight, reopens
 it, and verifies retained IDs, exact order/count, internal target existence, and owner
-relationship-reference resolution before continuing. The adapter is enabled only for the pinned
-`python-pptx` version.
+relationship-reference resolution before continuing. The adapter is enabled only for the
+supported `python-pptx` range and fails closed outside it.
 
 ## Selectors and replacement rules
 

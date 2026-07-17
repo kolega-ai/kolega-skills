@@ -1,5 +1,0 @@
-# SPDX-License-Identifier: Apache-2.0
-# Direct runtime dependencies. Compile transitives into requirements.txt.
-python-docx
-lxml
-pypdf

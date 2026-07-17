@@ -39,14 +39,17 @@ Once installed, describe the task normally. A compatible client uses each skill'
 
 ### Document skill runtimes
 
-Each document skill is independently installable and carries its own pinned Python runtime
-requirements. The skill selects any available Python 3.11+ interpreter rather than assuming
-that `python` or `python3` has a particular meaning. Before installing anything, it tells the
-user what is missing, where it will be installed, and which installer it intends to use.
-Pinned Python packages are normally installed through the selected interpreter's `-m pip`.
+Each document skill is independently installable and carries its own direct Python runtime
+requirements with compatible release ranges. The skill selects any available Python 3.11+
+interpreter rather than assuming that `python` or `python3` has a particular meaning. Before
+installing anything, it tells the user what is missing, where it will be installed, and which
+installer it intends to use.
+Python packages are normally installed through the selected interpreter's `-m pip`.
 Python itself and external applications use the platform's normal package manager, with
 Homebrew preferred on macOS when available. A local environment is a fallback when direct
 installation is blocked; it is not required.
+The document skills do not require `uv`; `uv` is used only by the repository development
+and validation commands below.
 
 - DOCX-to-PDF and PPTX-to-PDF conversion optionally use a separately installed LibreOffice
   `soffice` executable. The source-format skill owns these conversions; use `pdf` for
