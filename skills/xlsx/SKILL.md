@@ -14,6 +14,13 @@ metadata:
 Operate on `.xlsx` files with a deterministic CLI. Keep source workbooks immutable, refuse
 macro-enabled content, and verify every workbook after saving.
 
+## Workspace discipline
+
+Work directly in visible workspace paths. Never create or use `.build` or another hidden
+build/work directory. Write requested deliverables directly to their declared destinations;
+if intermediate files are necessary, keep them in visible, narrowly scoped paths rather than
+staging the task in a hidden subtree.
+
 ## Workflow
 
 1. **Prepare the runtime proactively.** Resolve the skill root and choose any available Python
