@@ -114,10 +114,17 @@ Only after Phase 1 is complete and all hypotheses have been presented to the use
 If the fix fails any Phase 3 check:
 1. Analyze the failure. What did the check reveal that was missed?
 2. Escalate the investigation scope from NEIGHBORHOOD to SYSTEM.
-3. Select the next-best hypothesis from those produced in Phase 1.
-4. Return to Phase 2 with the updated investigation scope and hypothesis.
-5. Track attempts in conversation context. Maximum two fix attempts.
-6. On the second failure, produce a detailed report of what was tried, what was learned,
+3. **Rerun the investigation at system scope.** Dispatch fresh investigation sub-agents
+   with the escalated scope (full codebase). Discard neighborhood-level hypotheses — the
+   system perspective often reveals different root causes. Each sub-agent must examine
+   cross-module interactions, service boundaries, external APIs, data flow, and side
+   effects that were invisible at neighborhood scope.
+4. **Update and rerank hypotheses** based on the system-scope investigation. Generate new
+   hypotheses if the expanded context reveals previously undetectable causes. Present the
+   updated ranked list to the user before proceeding.
+5. Return to Phase 2 (ACT) with the reranked system-scope hypotheses.
+6. Track attempts in conversation context. Maximum two fix attempts.
+7. On the second failure, produce a detailed report of what was tried, what was learned,
    and ask the user for direction. Do not loop indefinitely.
 
 ## Phase 5 — REPORT
@@ -137,7 +144,7 @@ Output a structured report:
 
 Do NOT activate this skill for:
 - "Review this PR" → use the `review` skill instead
-- "Build a new calculator module" → use the `new-code-loop` skill instead
+- "Build a new calculator module" → This skill is exclusively for bug fixing. Do not use it for new feature implementation.
 - "Add a docstring to utils.py" → handle as a normal coding task
 - "What does this error mean?" → handle as a normal investigation
 - "Refactor the auth module" → handle as a normal coding task

@@ -12,9 +12,7 @@ and adds repository-level validation, deterministic packaging, tests, and CI.
 | Skill | Use it for |
 | --- | --- |
 | [`bug-fix-loop`](skills/bug-fix-loop/SKILL.md) | Structured bug fixing with mandatory two-pass investigation — Reproduce → Investigate → Act → Check → Adapt → Report |
-| [`bug-fix-loop`](skills/bug-fix-loop/SKILL.md) | Structured bug fixing with mandatory two-pass investigation — Reproduce → Investigate → Act → Check → Adapt → Report |
 | [`docx`](skills/docx/SKILL.md) | Creating, inspecting, editing, and converting Microsoft Word `.docx` documents |
-| [`new-code-loop`](skills/new-code-loop/SKILL.md) | Structured feature building with parallel candidates and independent verification — Goal → Generate → Verify → Select → Report |
 | [`pdf`](skills/pdf/SKILL.md) | PDF-native extraction, creation, page operations, forms, security, conversion, and explicit OCR routing |
 | [`pptx`](skills/pptx/SKILL.md) | Building, inspecting, editing, and converting Microsoft PowerPoint `.pptx` presentations |
 | [`review`](skills/review/SKILL.md) | Reviewing pull requests, local changes, or branch diffs, with help and optional GitHub comments |
