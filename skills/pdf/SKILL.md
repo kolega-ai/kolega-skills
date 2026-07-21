@@ -14,6 +14,13 @@ metadata:
 Use `scripts/pdf_tool.py` for deterministic PDF-native work. Keep every source immutable,
 write to a distinct destination, and verify the published output.
 
+## Workspace discipline
+
+Work directly in visible workspace paths. Never create or use `.build` or another hidden
+build/work directory. Write requested deliverables directly to their declared destinations;
+if intermediate files are necessary, keep them in visible, narrowly scoped paths rather than
+staging the task in a hidden subtree.
+
 ## Route the task
 
 - Use `inspect` before mutation to inventory pages, encryption, forms, images, text, and
