@@ -27,7 +27,15 @@ try:
     from docx import Document
     from docx.document import Document as DocumentObject
     from docx.enum.section import WD_ORIENT, WD_SECTION
-    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+    from docx.enum.style import WD_STYLE_TYPE
+    from docx.enum.text import (
+        WD_ALIGN_PARAGRAPH,
+        WD_BREAK,
+        WD_LINE_SPACING,
+        WD_TAB_ALIGNMENT,
+        WD_TAB_LEADER,
+    )
+    from docx.image.image import Image
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     from docx.section import _Footer, _Header
@@ -88,6 +96,49 @@ REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+A14_NS = "http://schemas.microsoft.com/office/drawing/2010/main"
+W14_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
+DECORATIVE_EXTENSION_URI = "{C183D7F6-B498-43B3-948B-1728B52AA6E4}"
+
+PARAGRAPH_LAYOUT_KEYS = {
+    "space_before_pt",
+    "space_after_pt",
+    "line_spacing",
+    "left_indent_inches",
+    "right_indent_inches",
+    "first_line_indent_inches",
+    "hanging_indent_inches",
+    "keep_with_next",
+    "keep_together",
+    "page_break_before",
+    "widow_control",
+    "tab_stops",
+}
+TABLE_KEYS = {
+    "type",
+    "rows",
+    "style",
+    "header_rows",
+    "layout",
+    "column_widths_inches",
+    "allow_row_split",
+    "row_allow_split",
+}
+SECTION_KEYS = {
+    "paper_size",
+    "page_width_inches",
+    "page_height_inches",
+    "orientation",
+    "top_margin_inches",
+    "right_margin_inches",
+    "bottom_margin_inches",
+    "left_margin_inches",
+    "header_distance_inches",
+    "footer_distance_inches",
+    "different_first_page",
+    "page_number_start",
+    "page_number_format",
+}
 
 REVISION_TAGS = {
     qn("w:ins"),
@@ -538,6 +589,49 @@ def paragraph_record(paragraph: Paragraph, index: int) -> dict[str, Any]:
     match = re.fullmatch(r"Heading\s+([1-9])", style or "", re.I)
     if match:
         heading = int(match.group(1))
+    paragraph_format = paragraph.paragraph_format
+    tabs = []
+    for tab in paragraph_format.tab_stops:
+        tabs.append(
+            {
+                "position_inches": length_inches(tab.position),
+                "alignment": tab.alignment.name.lower() if tab.alignment is not None else None,
+                "leader": tab.leader.name.lower() if tab.leader is not None else None,
+            }
+        )
+    line_spacing = paragraph_format.line_spacing
+    layout = {
+        "space_before_pt": (
+            round(paragraph_format.space_before.pt, 3)
+            if paragraph_format.space_before is not None
+            else None
+        ),
+        "space_after_pt": (
+            round(paragraph_format.space_after.pt, 3)
+            if paragraph_format.space_after is not None
+            else None
+        ),
+        "line_spacing": (
+            round(line_spacing.pt, 3)
+            if hasattr(line_spacing, "pt")
+            else round(float(line_spacing), 3)
+            if line_spacing is not None
+            else None
+        ),
+        "line_spacing_rule": (
+            paragraph_format.line_spacing_rule.name.lower()
+            if paragraph_format.line_spacing_rule is not None
+            else None
+        ),
+        "left_indent_inches": length_inches(paragraph_format.left_indent),
+        "right_indent_inches": length_inches(paragraph_format.right_indent),
+        "first_line_indent_inches": length_inches(paragraph_format.first_line_indent),
+        "keep_with_next": paragraph_format.keep_with_next,
+        "keep_together": paragraph_format.keep_together,
+        "page_break_before": paragraph_format.page_break_before,
+        "widow_control": paragraph_format.widow_control,
+        "tab_stops": tabs,
+    }
     return {
         "index": index,
         "text": paragraph.text,
@@ -545,6 +639,7 @@ def paragraph_record(paragraph: Paragraph, index: int) -> dict[str, Any]:
         "heading_level": heading,
         "list": list_info,
         "alignment": paragraph.alignment.name if paragraph.alignment is not None else None,
+        "layout": layout,
         "runs": [
             {"index": run_index, "text": run.text, "format": run_format(run)}
             for run_index, run in enumerate(paragraph.runs)
@@ -552,10 +647,11 @@ def paragraph_record(paragraph: Paragraph, index: int) -> dict[str, Any]:
     }
 
 
-def table_record(table: Table, index: int) -> dict[str, Any]:
+def table_record(table: Table, index: int, section_index: int | None = None) -> dict[str, Any]:
     """Serialize a table and its cell paragraphs."""
 
     rows: list[list[dict[str, Any]]] = []
+    row_allows_split: list[bool] = []
     for row in table.rows:
         cells: list[dict[str, Any]] = []
         for cell in row.cells:
@@ -569,9 +665,25 @@ def table_record(table: Table, index: int) -> dict[str, Any]:
                 }
             )
         rows.append(cells)
+        tr_pr = row._tr.trPr
+        cant_split = tr_pr.find(qn("w:cantSplit")) if tr_pr is not None else None
+        cant_split_value = cant_split.get(qn("w:val")) if cant_split is not None else None
+        row_allows_split.append(cant_split is None or cant_split_value in {"0", "false", "off"})
+    autofit = table.autofit
+    header_rows = 0
+    for row in table.rows:
+        repeat = row._tr.get_or_add_trPr().find(qn("w:tblHeader"))
+        if repeat is None or repeat.get(qn("w:val")) in {"0", "false", "off"}:
+            break
+        header_rows += 1
     return {
         "index": index,
+        "section_index": section_index,
         "style": table.style.name if table.style is not None else None,
+        "layout": ("autofit" if autofit is True else "fixed" if autofit is False else "default"),
+        "column_widths_inches": [length_inches(column.width) for column in table.columns],
+        "row_allows_split": row_allows_split,
+        "header_rows": header_rows,
         "rows": rows,
         "row_count": len(table.rows),
         "column_count": max((len(row.cells) for row in table.rows), default=0),
@@ -598,12 +710,34 @@ def length_inches(value: Any) -> float | None:
 def section_record(section: Any, index: int) -> dict[str, Any]:
     """Serialize page and margin settings."""
 
+    pg_num = section._sectPr.find(qn("w:pgNumType"))
+    width = length_inches(section.page_width)
+    height = length_inches(section.page_height)
+    usable = (
+        round(
+            section.page_width.inches - section.left_margin.inches - section.right_margin.inches, 4
+        )
+        if section.page_width and section.left_margin and section.right_margin
+        else None
+    )
     return {
         "index": index,
         "start_type": section.start_type.name if section.start_type is not None else None,
         "orientation": section.orientation.name if section.orientation is not None else None,
         "page_width_inches": length_inches(section.page_width),
         "page_height_inches": length_inches(section.page_height),
+        "paper_size": (
+            "letter"
+            if width is not None
+            and height is not None
+            and {round(width, 2), round(height, 2)} == {8.5, 11.0}
+            else "a4"
+            if width is not None
+            and height is not None
+            and {round(width, 2), round(height, 2)} == {8.27, 11.69}
+            else None
+        ),
+        "usable_width_inches": usable,
         "top_margin_inches": length_inches(section.top_margin),
         "right_margin_inches": length_inches(section.right_margin),
         "bottom_margin_inches": length_inches(section.bottom_margin),
@@ -611,6 +745,12 @@ def section_record(section: Any, index: int) -> dict[str, Any]:
         "header_distance_inches": length_inches(section.header_distance),
         "footer_distance_inches": length_inches(section.footer_distance),
         "different_first_page": bool(section.different_first_page_header_footer),
+        "page_number_start": (
+            int(pg_num.get(qn("w:start")))
+            if pg_num is not None and pg_num.get(qn("w:start"))
+            else None
+        ),
+        "page_number_format": pg_num.get(qn("w:fmt")) if pg_num is not None else None,
     }
 
 
@@ -653,6 +793,121 @@ def core_properties_record(document: DocumentObject) -> dict[str, Any]:
     return result
 
 
+def inspect_styles(document: DocumentObject) -> list[dict[str, Any]]:
+    """Serialize paragraph/character style definitions relevant to authored content."""
+
+    records = []
+    for style in document.styles:
+        if style.type not in {WD_STYLE_TYPE.PARAGRAPH, WD_STYLE_TYPE.CHARACTER}:
+            continue
+        font = style.font
+        record = {
+            "name": style.name,
+            "type": "paragraph" if style.type == WD_STYLE_TYPE.PARAGRAPH else "character",
+            "based_on": style.base_style.name if style.base_style is not None else None,
+            "font": {
+                "name": font.name,
+                "size_pt": round(font.size.pt, 3) if font.size is not None else None,
+                "bold": font.bold,
+                "italic": font.italic,
+                "underline": font.underline,
+                "color": str(font.color.rgb) if font.color.rgb is not None else None,
+            },
+        }
+        if style.type == WD_STYLE_TYPE.PARAGRAPH:
+            p_pr = style.element.pPr
+            outline = p_pr.find(qn("w:outlineLvl")) if p_pr is not None else None
+            record["outline_level"] = int(outline.get(qn("w:val"))) if outline is not None else None
+            record["paragraph"] = {
+                "alignment": (
+                    style.paragraph_format.alignment.name.lower()
+                    if style.paragraph_format.alignment is not None
+                    else None
+                ),
+                "space_before_pt": (
+                    round(style.paragraph_format.space_before.pt, 3)
+                    if style.paragraph_format.space_before is not None
+                    else None
+                ),
+                "space_after_pt": (
+                    round(style.paragraph_format.space_after.pt, 3)
+                    if style.paragraph_format.space_after is not None
+                    else None
+                ),
+                "keep_with_next": style.paragraph_format.keep_with_next,
+                "keep_together": style.paragraph_format.keep_together,
+            }
+        records.append(record)
+    return records
+
+
+def inspect_fields(path: Path) -> list[dict[str, Any]]:
+    """Inspect simple and complex fields with instruction, state, and visible result."""
+
+    records: list[dict[str, Any]] = []
+    with zipfile.ZipFile(path) as package:
+        for part in sorted(
+            name
+            for name in package.namelist()
+            if name == "word/document.xml" or re.fullmatch(r"word/(header|footer)\d+\.xml", name)
+        ):
+            root = parse_xml_safely(package.read(part), part)
+            for index, simple in enumerate(root.findall(f".//{{{WORD_NS}}}fldSimple")):
+                instruction = simple.get(qn("w:instr"), "")
+                records.append(
+                    {
+                        "story_address": f"{part}#simple-{index}",
+                        "type": instruction.strip().split(maxsplit=1)[0].upper()
+                        if instruction.strip()
+                        else None,
+                        "instruction": instruction,
+                        "dirty": simple.get(qn("w:dirty")) in {"1", "true", "on"},
+                        "locked": simple.get(qn("w:fldLock")) in {"1", "true", "on"},
+                        "result": "".join(simple.itertext()),
+                    }
+                )
+            stack: list[dict[str, Any]] = []
+            complex_index = 0
+            for element in root.iter():
+                if element.tag == qn("w:fldChar"):
+                    field_type = element.get(qn("w:fldCharType"))
+                    if field_type == "begin":
+                        stack.append(
+                            {
+                                "instruction": [],
+                                "result": [],
+                                "separate": False,
+                                "dirty": element.get(qn("w:dirty")) in {"1", "true", "on"},
+                                "locked": element.get(qn("w:fldLock")) in {"1", "true", "on"},
+                            }
+                        )
+                    elif field_type == "separate" and stack:
+                        stack[-1]["separate"] = True
+                    elif field_type == "end" and stack:
+                        active = stack.pop()
+                        instruction = "".join(active["instruction"])
+                        records.append(
+                            {
+                                "story_address": f"{part}#complex-{complex_index}",
+                                "type": instruction.strip().split(maxsplit=1)[0].upper()
+                                if instruction.strip()
+                                else None,
+                                "instruction": instruction,
+                                "dirty": active["dirty"],
+                                "locked": active["locked"],
+                                "result": "".join(active["result"]),
+                            }
+                        )
+                        complex_index += 1
+                elif stack and element.tag == qn("w:instrText") and element.text:
+                    stack[-1]["instruction"].append(element.text)
+                elif stack and element.tag == qn("w:t") and element.text:
+                    for active in stack:
+                        if active["separate"]:
+                            active["result"].append(element.text)
+    return records
+
+
 def inspect_media(path: Path, document: DocumentObject) -> dict[str, Any]:
     """Inventory media members and inline occurrences across XML parts."""
 
@@ -669,27 +924,217 @@ def inspect_media(path: Path, document: DocumentObject) -> dict[str, Any]:
                     }
                 )
 
+    body_sections: list[int] = []
+    section_index = 0
+    for kind, block in iter_body_blocks(document):
+        body_sections.extend(section_index for _ in block._element.iter(f"{{{WP_NS}}}inline"))
+        if kind == "paragraph":
+            p_pr = block._p.pPr
+            if p_pr is not None and p_pr.sectPr is not None:
+                section_index = min(section_index + 1, len(document.sections) - 1)
+
     occurrences: list[dict[str, Any]] = []
     for part in document.part.package.parts:
         element = getattr(part, "element", None)
         if element is None:
             continue
-        for inline in element.iter(f"{{{WP_NS}}}inline"):
+        for local_index, inline in enumerate(element.iter(f"{{{WP_NS}}}inline")):
             blip = next(inline.iter(f"{{{A_NS}}}blip"), None)
             if blip is None or blip.get(f"{{{REL_NS}}}embed") is None:
                 continue
             extent = next(inline.iter(f"{{{WP_NS}}}extent"), None)
+            relationship_id = blip.get(f"{{{REL_NS}}}embed")
+            image_part = part.related_parts.get(relationship_id)
+            pixel_width = pixel_height = None
+            if image_part is not None:
+                try:
+                    source = Image.from_blob(image_part.blob)
+                    pixel_width, pixel_height = source.px_width, source.px_height
+                except Exception:
+                    pass
+            width_emu = int(extent.get("cx")) if extent is not None else None
+            height_emu = int(extent.get("cy")) if extent is not None else None
+            doc_pr = next(inline.iter(f"{{{WP_NS}}}docPr"), None)
+            display_width = round(width_emu / 914400, 4) if width_emu else None
+            display_height = round(height_emu / 914400, 4) if height_emu else None
             occurrences.append(
                 {
                     "container_part": str(part.partname).lstrip("/"),
-                    "relationship_id": (
-                        blip.get(f"{{{REL_NS}}}embed") if blip is not None else None
+                    "story_address": f"{str(part.partname).lstrip('/')}#inline-{local_index}",
+                    "relationship_id": relationship_id,
+                    "section_index": (
+                        body_sections[local_index]
+                        if str(part.partname).lstrip("/") == "word/document.xml"
+                        and local_index < len(body_sections)
+                        else None
                     ),
-                    "width_emu": int(extent.get("cx")) if extent is not None else None,
-                    "height_emu": int(extent.get("cy")) if extent is not None else None,
+                    "width_emu": width_emu,
+                    "height_emu": height_emu,
+                    "display_width_inches": display_width,
+                    "display_height_inches": display_height,
+                    "pixel_width": pixel_width,
+                    "pixel_height": pixel_height,
+                    "effective_ppi_x": (
+                        round(pixel_width / display_width, 1)
+                        if pixel_width and display_width
+                        else None
+                    ),
+                    "effective_ppi_y": (
+                        round(pixel_height / display_height, 1)
+                        if pixel_height and display_height
+                        else None
+                    ),
+                    "upscaled": bool(
+                        pixel_width
+                        and pixel_height
+                        and display_width
+                        and display_height
+                        and (display_width * 96 > pixel_width or display_height * 96 > pixel_height)
+                    ),
+                    "alt_text": doc_pr.get("descr") if doc_pr is not None else None,
+                    "title": doc_pr.get("title") if doc_pr is not None else None,
+                    "decorative": (
+                        doc_pr.find(
+                            f"{{{A_NS}}}extLst/{{{A_NS}}}ext"
+                            f"[@uri='{DECORATIVE_EXTENSION_URI}']/"
+                            f"{{{A14_NS}}}decorative[@val='1']"
+                        )
+                        is not None
+                        if doc_pr is not None
+                        else False
+                    ),
                 }
             )
     return {"media_parts": media, "inline_occurrences": occurrences}
+
+
+def inspect_fonts(path: Path) -> dict[str, Any]:
+    """Inventory referenced fonts and fonts actually embedded in the DOCX package."""
+
+    referenced_by_casefold: dict[str, str] = {}
+    embedded_by_casefold: dict[str, str] = {}
+    references: list[dict[str, str]] = []
+    dangling_embeddings: list[dict[str, str]] = []
+    run_fonts_tag = f"{{{WORD_NS}}}rFonts"
+    font_attributes = {
+        f"{{{WORD_NS}}}ascii",
+        f"{{{WORD_NS}}}hAnsi",
+        f"{{{WORD_NS}}}eastAsia",
+        f"{{{WORD_NS}}}cs",
+    }
+    theme_attributes = {
+        f"{{{WORD_NS}}}asciiTheme",
+        f"{{{WORD_NS}}}hAnsiTheme",
+        f"{{{WORD_NS}}}eastAsiaTheme",
+        f"{{{WORD_NS}}}csTheme",
+    }
+    embedding_tags = {
+        f"{{{WORD_NS}}}embedRegular",
+        f"{{{WORD_NS}}}embedBold",
+        f"{{{WORD_NS}}}embedItalic",
+        f"{{{WORD_NS}}}embedBoldItalic",
+    }
+
+    with zipfile.ZipFile(path) as package:
+        names = set(package.namelist())
+        theme_tokens: set[str] = set()
+        theme_fonts: dict[str, str] = {}
+        for name in names:
+            if name.startswith("word/theme/") and name.endswith(".xml"):
+                root = parse_xml_safely(package.read(name), name)
+                major = root.find(f".//{{{A_NS}}}majorFont")
+                minor = root.find(f".//{{{A_NS}}}minorFont")
+                for prefix, group in (("major", major), ("minor", minor)):
+                    if group is None:
+                        continue
+                    for suffix, tag in (("Ascii", "latin"), ("EastAsia", "ea"), ("Bidi", "cs")):
+                        element = group.find(f"{{{A_NS}}}{tag}")
+                        value = (
+                            (element.get("typeface") or "").strip() if element is not None else ""
+                        )
+                        if value:
+                            theme_fonts[prefix + suffix] = value
+        for name in names:
+            if not name.startswith("word/") or not name.lower().endswith(".xml"):
+                continue
+            root = parse_xml_safely(package.read(name), name)
+            if name != "word/fontTable.xml":
+                for element in root.iter(run_fonts_tag):
+                    for attribute in font_attributes:
+                        value = (element.get(attribute) or "").strip()
+                        if value and not value.startswith("+"):
+                            referenced_by_casefold.setdefault(value.casefold(), value)
+                            references.append(
+                                {
+                                    "part": name,
+                                    "slot": attribute.rsplit("}", 1)[-1],
+                                    "font": value,
+                                    "source": "explicit",
+                                }
+                            )
+                    for attribute in theme_attributes:
+                        token = (element.get(attribute) or "").strip()
+                        if token:
+                            theme_tokens.add(token)
+                            aliases = {
+                                "majorHAnsi": "majorAscii",
+                                "minorHAnsi": "minorAscii",
+                            }
+                            value = theme_fonts.get(aliases.get(token, token))
+                            if value:
+                                referenced_by_casefold.setdefault(value.casefold(), value)
+                                references.append(
+                                    {
+                                        "part": name,
+                                        "slot": attribute.rsplit("}", 1)[-1],
+                                        "font": value,
+                                        "source": token,
+                                    }
+                                )
+
+        font_table = "word/fontTable.xml"
+        if font_table in names:
+            root = parse_xml_safely(package.read(font_table), font_table)
+            relationships: dict[str, str] = {}
+            rel_name = "word/_rels/fontTable.xml.rels"
+            if rel_name in names:
+                rel_root = parse_xml_safely(package.read(rel_name), rel_name)
+                relationships = {
+                    rel.get("Id", ""): str(PurePosixPath("word") / rel.get("Target", ""))
+                    for rel in rel_root
+                    if rel.get("TargetMode") != "External"
+                }
+            for font in root.findall(f".//{{{WORD_NS}}}font"):
+                font_name = (font.get(f"{{{WORD_NS}}}name") or "").strip()
+                for child in font:
+                    if child.tag not in embedding_tags or not font_name:
+                        continue
+                    rid = child.get(f"{{{REL_NS}}}id", "")
+                    target = relationships.get(rid)
+                    if target in names:
+                        embedded_by_casefold.setdefault(font_name.casefold(), font_name)
+                    else:
+                        dangling_embeddings.append(
+                            {"font": font_name, "relationship_id": rid, "target": target or ""}
+                        )
+
+    referenced = list(referenced_by_casefold.values())
+    embedded = list(embedded_by_casefold.values())
+    return {
+        "referenced": sorted(referenced, key=str.casefold),
+        "embedded": sorted(embedded, key=str.casefold),
+        "unembedded": sorted(
+            (
+                value
+                for key, value in referenced_by_casefold.items()
+                if key not in embedded_by_casefold
+            ),
+            key=str.casefold,
+        ),
+        "references": references,
+        "theme_tokens_referenced": sorted(theme_tokens),
+        "dangling_embedding_relationships": dangling_embeddings,
+    }
 
 
 def scan_features(path: Path) -> tuple[dict[str, int], list[str]]:
@@ -751,13 +1196,17 @@ def inspect_document(
     ordered: list[dict[str, Any]] = []
     paragraphs: list[dict[str, Any]] = []
     tables: list[dict[str, Any]] = []
+    section_index = 0
     for block_index, (kind, block) in enumerate(iter_body_blocks(document)):
         if kind == "paragraph":
             record = paragraph_record(block, len(paragraphs))
             paragraphs.append(record)
             ordered.append({"block_index": block_index, "type": kind, "value": record})
+            p_pr = block._p.pPr
+            if p_pr is not None and p_pr.sectPr is not None:
+                section_index = min(section_index + 1, len(document.sections) - 1)
         else:
-            record = table_record(block, len(tables))
+            record = table_record(block, len(tables), section_index)
             tables.append(record)
             ordered.append({"block_index": block_index, "type": kind, "value": record})
 
@@ -780,6 +1229,9 @@ def inspect_document(
         )
 
     feature_counts, unsupported_parts = scan_features(preflight.path)
+    fonts = inspect_fonts(preflight.path)
+    images = inspect_media(preflight.path, document)
+    fields = inspect_fields(preflight.path)
     warnings = list(preflight.warnings)
     warning_specs = (
         ("fields", "fields_present", "Fields require a layout application to update."),
@@ -815,6 +1267,155 @@ def inspect_document(
                 parts=unsupported_parts,
             )
         )
+    if fonts["unembedded"]:
+        warnings.append(
+            warning(
+                "unembedded_fonts",
+                (
+                    "DOCX references fonts that are not embedded in the package. PDF font "
+                    "embedding does not make the DOCX portable; another Word renderer may "
+                    "substitute fonts and change wrapping, page breaks, object flow, and TOC "
+                    "page references. Use conservative cross-renderer fonts or embed licensed "
+                    "fonts, and do not claim DOCX/PDF pagination fidelity from a PDF-only check."
+                ),
+                fonts=fonts["unembedded"],
+            )
+        )
+        portable_fonts = {"arial", "times new roman", "courier new"}
+        nonportable_fonts = [
+            font for font in fonts["unembedded"] if font.casefold() not in portable_fonts
+        ]
+        if nonportable_fonts:
+            warnings.append(
+                warning(
+                    "nonportable_unembedded_fonts",
+                    (
+                        "RELEASE BLOCKER: DOCX references unembedded fonts outside the "
+                        "conservative cross-renderer set (Arial, Times New Roman, Courier "
+                        "New). Replace these fonts before releasing matching DOCX and PDF "
+                        "deliverables; renderer substitution can change wrapping and pagination."
+                    ),
+                    fonts=nonportable_fonts,
+                )
+            )
+    if fonts["dangling_embedding_relationships"]:
+        warnings.append(
+            warning(
+                "dangling_font_embedding_relationships",
+                "Font embedding markup has missing or invalid relationship targets.",
+                relationships=fonts["dangling_embedding_relationships"],
+            )
+        )
+    metadata = core_properties_record(document)
+    if not metadata.get("title"):
+        warnings.append(warning("missing_document_title", "Document metadata has no title."))
+    if not metadata.get("language"):
+        warnings.append(warning("missing_document_language", "Document metadata has no language."))
+    previous_heading = 0
+    for paragraph in paragraphs:
+        level = paragraph["heading_level"]
+        if level and previous_heading and level > previous_heading + 1:
+            warnings.append(
+                warning(
+                    "heading_level_skip",
+                    "Heading hierarchy skips a level.",
+                    paragraph_index=paragraph["index"],
+                    previous_level=previous_heading,
+                    heading_level=level,
+                )
+            )
+        if level:
+            previous_heading = level
+    for table in tables:
+        if table["row_count"] > 1 and table["header_rows"] == 0:
+            warnings.append(
+                warning(
+                    "data_table_without_header_row",
+                    "Table has no repeated header row.",
+                    table_index=table["index"],
+                )
+            )
+        widths = [value or 0 for value in table["column_widths_inches"]]
+        table_section = table["section_index"] if table["section_index"] is not None else 0
+        usable = section_record(document.sections[table_section], table_section)[
+            "usable_width_inches"
+        ]
+        if usable and sum(widths) > usable + 0.01:
+            warnings.append(
+                warning(
+                    "table_exceeds_printable_width",
+                    "Table width exceeds the section usable width.",
+                    table_index=table["index"],
+                    table_width_inches=round(sum(widths), 4),
+                    usable_width_inches=usable,
+                )
+            )
+    section_usable = [
+        section_record(section, index)["usable_width_inches"]
+        for index, section in enumerate(document.sections)
+    ]
+    for image in images["inline_occurrences"]:
+        if not image["decorative"] and not image["alt_text"]:
+            warnings.append(
+                warning(
+                    "informative_image_missing_alt_text",
+                    "Informative image has no alternative text.",
+                    story_address=image["story_address"],
+                )
+            )
+        ppi_values = [
+            value for value in (image["effective_ppi_x"], image["effective_ppi_y"]) if value
+        ]
+        if ppi_values and min(ppi_values) < 150:
+            warnings.append(
+                warning(
+                    "low_resolution_image",
+                    "Effective image resolution is below 150 PPI.",
+                    story_address=image["story_address"],
+                    effective_ppi=min(ppi_values),
+                )
+            )
+        if image["container_part"] == "word/document.xml" and image["display_width_inches"]:
+            image_section = image["section_index"]
+            if image_section is None or image_section >= len(section_usable):
+                warnings.append(
+                    warning(
+                        "image_printable_width_uncertain",
+                        (
+                            "Image could not be mapped to a body section; "
+                            "printable-width fit is unknown."
+                        ),
+                        story_address=image["story_address"],
+                    )
+                )
+            elif (
+                section_usable[image_section]
+                and image["display_width_inches"] > section_usable[image_section]
+            ):
+                warnings.append(
+                    warning(
+                        "image_exceeds_printable_width",
+                        "Image display width exceeds section usable width.",
+                        story_address=image["story_address"],
+                        section_index=image_section,
+                        usable_width_inches=section_usable[image_section],
+                    )
+                )
+    for field in fields:
+        if field["type"] == "TOC" and (
+            not field["result"].strip() or "right-click and update" in field["result"].casefold()
+        ):
+            warnings.append(
+                warning(
+                    "toc_placeholder_only",
+                    (
+                        "TOC visible result is only a placeholder and needs a "
+                        "layout-application update."
+                    ),
+                    story_address=field["story_address"],
+                )
+            )
+    update_fields = document.settings.element.find(qn("w:updateFields"))
 
     result = {
         "ordered_blocks": ordered,
@@ -825,8 +1426,18 @@ def inspect_document(
         ],
         "headers": headers,
         "footers": footers,
-        "metadata": core_properties_record(document),
-        "images": inspect_media(preflight.path, document),
+        "metadata": metadata,
+        "styles": inspect_styles(document),
+        "images": images,
+        "fonts": fonts,
+        "fields": fields,
+        "settings": {
+            "odd_and_even_pages": bool(document.settings.odd_and_even_pages_header_footer),
+            "update_fields_on_open": (
+                update_fields is not None
+                and update_fields.get(qn("w:val"), "true") not in {"0", "false", "off"}
+            ),
+        },
         "features": feature_counts,
         "unsupported_parts": unsupported_parts,
         "package": {
@@ -1025,6 +1636,68 @@ def apply_paragraph_format(paragraph: Paragraph, block: dict[str, Any]) -> None:
         if alignment not in alignments:
             raise ToolError("bad_input", "Unsupported paragraph alignment.")
         paragraph.alignment = alignments[alignment]
+    paragraph_format = paragraph.paragraph_format
+    for key, attr in (
+        ("space_before_pt", "space_before"),
+        ("space_after_pt", "space_after"),
+    ):
+        if key in block:
+            setattr(paragraph_format, attr, Pt(required_number(block[key], key, minimum=0)))
+    for key, attr in (
+        ("left_indent_inches", "left_indent"),
+        ("right_indent_inches", "right_indent"),
+    ):
+        if key in block:
+            setattr(paragraph_format, attr, Inches(required_number(block[key], key, minimum=0)))
+    if "first_line_indent_inches" in block and "hanging_indent_inches" in block:
+        raise ToolError("bad_input", "first_line_indent_inches and hanging_indent_inches conflict.")
+    if "first_line_indent_inches" in block:
+        paragraph_format.first_line_indent = Inches(
+            required_number(block["first_line_indent_inches"], "first_line_indent_inches")
+        )
+    if "hanging_indent_inches" in block:
+        paragraph_format.first_line_indent = Inches(
+            -required_number(block["hanging_indent_inches"], "hanging_indent_inches", minimum=0)
+        )
+    if "line_spacing" in block:
+        value = block["line_spacing"]
+        if isinstance(value, str):
+            rules = {
+                "single": WD_LINE_SPACING.SINGLE,
+                "one_and_half": WD_LINE_SPACING.ONE_POINT_FIVE,
+                "double": WD_LINE_SPACING.DOUBLE,
+            }
+            if value not in rules:
+                raise ToolError("bad_input", "line_spacing string is unsupported.")
+            paragraph_format.line_spacing_rule = rules[value]
+        else:
+            paragraph_format.line_spacing = required_number(value, "line_spacing", minimum=0.1)
+    for key in ("keep_with_next", "keep_together", "page_break_before", "widow_control"):
+        if key in block:
+            setattr(paragraph_format, key, optional_boolean(block[key], key))
+    if "tab_stops" in block:
+        paragraph_format.tab_stops.clear_all()
+        alignments = {
+            "left": WD_TAB_ALIGNMENT.LEFT,
+            "center": WD_TAB_ALIGNMENT.CENTER,
+            "right": WD_TAB_ALIGNMENT.RIGHT,
+            "decimal": WD_TAB_ALIGNMENT.DECIMAL,
+            "bar": WD_TAB_ALIGNMENT.BAR,
+        }
+        leaders = {
+            "spaces": WD_TAB_LEADER.SPACES,
+            "dots": WD_TAB_LEADER.DOTS,
+            "dashes": WD_TAB_LEADER.DASHES,
+            "lines": WD_TAB_LEADER.LINES,
+            "heavy": WD_TAB_LEADER.HEAVY,
+            "middle_dot": WD_TAB_LEADER.MIDDLE_DOT,
+        }
+        for tab in block["tab_stops"]:
+            paragraph_format.tab_stops.add_tab_stop(
+                Inches(tab["position_inches"]),
+                alignments[tab.get("alignment", "left")],
+                leaders[tab.get("leader", "spaces")],
+            )
 
 
 def required_string(value: Any, field: str) -> str:
@@ -1152,6 +1825,51 @@ def validate_text_and_runs(spec: dict[str, Any], field: str) -> None:
         alignment = string_value(spec["alignment"], f"{field}.alignment")
         if alignment not in {"left", "center", "right", "justify"}:
             raise ToolError("bad_input", f"{field}.alignment is unsupported.")
+    for name in (
+        "space_before_pt",
+        "space_after_pt",
+        "left_indent_inches",
+        "right_indent_inches",
+        "hanging_indent_inches",
+    ):
+        if name in spec:
+            required_number(spec[name], f"{field}.{name}", minimum=0)
+    if "first_line_indent_inches" in spec:
+        required_number(spec["first_line_indent_inches"], f"{field}.first_line_indent_inches")
+    if "first_line_indent_inches" in spec and "hanging_indent_inches" in spec:
+        raise ToolError("bad_input", f"{field} cannot combine first-line and hanging indents.")
+    if "line_spacing" in spec:
+        value = spec["line_spacing"]
+        if isinstance(value, str):
+            if value not in {"single", "one_and_half", "double"}:
+                raise ToolError("bad_input", f"{field}.line_spacing is unsupported.")
+        else:
+            required_number(value, f"{field}.line_spacing", minimum=0.1)
+    for name in ("keep_with_next", "keep_together", "page_break_before", "widow_control"):
+        if name in spec:
+            optional_boolean(spec[name], f"{field}.{name}")
+    if "tab_stops" in spec:
+        tabs = spec["tab_stops"]
+        if not isinstance(tabs, list):
+            raise ToolError("bad_input", f"{field}.tab_stops must be an array.")
+        for index, tab in enumerate(tabs):
+            tab_field = f"{field}.tab_stops[{index}]"
+            if not isinstance(tab, dict):
+                raise ToolError("bad_input", f"{tab_field} must be an object.")
+            allow_keys(tab, {"position_inches", "alignment", "leader"}, tab_field)
+            require_keys(tab, {"position_inches"}, tab_field)
+            required_number(tab["position_inches"], f"{tab_field}.position_inches", minimum=0)
+            if tab.get("alignment", "left") not in {"left", "center", "right", "decimal", "bar"}:
+                raise ToolError("bad_input", f"{tab_field}.alignment is unsupported.")
+            if tab.get("leader", "spaces") not in {
+                "spaces",
+                "dots",
+                "dashes",
+                "lines",
+                "heavy",
+                "middle_dot",
+            }:
+                raise ToolError("bad_input", f"{tab_field}.leader is unsupported.")
 
 
 def validate_cell_value(value: Any, field: str) -> None:
@@ -1164,7 +1882,7 @@ def validate_cell_value(value: Any, field: str) -> None:
             "bad_input",
             f"{field} must be a string or paragraph object.",
         )
-    allow_keys(value, {"text", "runs", "style", "alignment"}, field)
+    allow_keys(value, {"text", "runs", "style", "alignment"} | PARAGRAPH_LAYOUT_KEYS, field)
     validate_text_and_runs(value, field)
 
 
@@ -1203,6 +1921,48 @@ def validate_table_block(block: dict[str, Any], field: str) -> None:
             minimum=0,
             maximum=len(rows),
         )
+    if "layout" in block:
+        layout = string_value(block["layout"], f"{field}.layout")
+        if layout not in {"autofit", "fixed"}:
+            raise ToolError(
+                "bad_input",
+                f"{field}.layout must be 'autofit' or 'fixed'.",
+            )
+    if "column_widths_inches" in block:
+        widths = block["column_widths_inches"]
+        if not isinstance(widths, list):
+            raise ToolError(
+                "bad_input",
+                f"{field}.column_widths_inches must be an array.",
+            )
+        if width is None or len(widths) != width:
+            raise ToolError(
+                "bad_input",
+                f"{field}.column_widths_inches must contain one width per column.",
+                details={
+                    "expected_columns": width,
+                    "actual_widths": len(widths),
+                },
+            )
+        for column_index, value in enumerate(widths):
+            required_number(
+                value,
+                f"{field}.column_widths_inches[{column_index}]",
+                minimum=0.1,
+            )
+    if "allow_row_split" in block:
+        optional_boolean(
+            block["allow_row_split"],
+            f"{field}.allow_row_split",
+        )
+    if "row_allow_split" in block:
+        values = block["row_allow_split"]
+        if not isinstance(values, list) or len(values) != len(rows):
+            raise ToolError(
+                "bad_input", f"{field}.row_allow_split must contain one Boolean per row."
+            )
+        for index, value in enumerate(values):
+            optional_boolean(value, f"{field}.row_allow_split[{index}]")
 
 
 def validate_block(block: Any, field: str, *, allow_sections: bool) -> None:
@@ -1213,7 +1973,7 @@ def validate_block(block: Any, field: str, *, allow_sections: bool) -> None:
     block_type = block.get("type", "paragraph")
     if not isinstance(block_type, str):
         raise ToolError("bad_input", f"{field}.type must be a string.")
-    paragraph_keys = {"type", "text", "runs", "style", "alignment"}
+    paragraph_keys = {"type", "text", "runs", "style", "alignment"} | PARAGRAPH_LAYOUT_KEYS
     if block_type == "paragraph":
         allow_keys(block, paragraph_keys, field)
         validate_text_and_runs(block, field)
@@ -1239,6 +1999,12 @@ def validate_block(block: Any, field: str, *, allow_sections: bool) -> None:
                 "alignment",
                 "prefix_runs",
                 "suffix_runs",
+                "alt_text",
+                "decorative",
+                "title",
+                "caption",
+                "caption_style",
+                "attribution",
             },
             field,
         )
@@ -1254,11 +2020,25 @@ def validate_block(block: Any, field: str, *, allow_sections: bool) -> None:
         for name in ("prefix_runs", "suffix_runs"):
             if name in block:
                 validate_runs(block[name], f"{field}.{name}")
+        for name in ("alt_text", "title", "caption", "caption_style", "attribution"):
+            if name in block:
+                string_value(block[name], f"{field}.{name}")
+        decorative = optional_boolean(block.get("decorative"), f"{field}.decorative")
+        if decorative and block.get("alt_text"):
+            raise ToolError("bad_input", f"{field} cannot combine decorative and alt_text.")
         return
     if block_type == "field":
         require_keys(block, {"field"}, field)
         field_name = required_string(block["field"], f"{field}.field")
-        if field_name not in {"page_number", "toc"}:
+        if field_name not in {
+            "page_number",
+            "toc",
+            "num_pages",
+            "section_pages",
+            "seq",
+            "ref",
+            "date",
+        }:
             raise ToolError("bad_input", f"{field}.field is unsupported.")
         allowed_field_keys = {
             "type",
@@ -1269,8 +2049,9 @@ def validate_block(block: Any, field: str, *, allow_sections: bool) -> None:
             "style",
             "alignment",
         }
-        if field_name == "toc":
+        if field_name in {"toc", "seq", "ref", "date"}:
             allowed_field_keys.add("instruction")
+        allowed_field_keys |= {"locked"}
         allow_keys(
             block,
             allowed_field_keys,
@@ -1279,6 +2060,8 @@ def validate_block(block: Any, field: str, *, allow_sections: bool) -> None:
         for name in ("prefix", "suffix", "placeholder", "instruction"):
             if name in block:
                 string_value(block[name], f"{field}.{name}")
+        if "locked" in block:
+            optional_boolean(block["locked"], f"{field}.locked")
         if "style" in block:
             required_string(block["style"], f"{field}.style")
         if "alignment" in block:
@@ -1305,7 +2088,7 @@ def validate_block(block: Any, field: str, *, allow_sections: bool) -> None:
             validate_text_and_runs(item, item_field)
         return
     if block_type == "table":
-        allow_keys(block, {"type", "rows", "style", "header_rows"}, field)
+        allow_keys(block, TABLE_KEYS, field)
         validate_table_block(block, field)
         return
     if block_type == "section_break":
@@ -1314,17 +2097,7 @@ def validate_block(block: Any, field: str, *, allow_sections: bool) -> None:
                 "bad_input",
                 f"{field} cannot contain a section break.",
             )
-        section_keys = {
-            "type",
-            "start",
-            "orientation",
-            "top_margin_inches",
-            "right_margin_inches",
-            "bottom_margin_inches",
-            "left_margin_inches",
-            "header_distance_inches",
-            "footer_distance_inches",
-        }
+        section_keys = {"type", "start"} | SECTION_KEYS
         allow_keys(block, section_keys, field)
         if "start" in block:
             start = string_value(block["start"], f"{field}.start")
@@ -1340,9 +2113,7 @@ def validate_block(block: Any, field: str, *, allow_sections: bool) -> None:
             orientation = string_value(block["orientation"], f"{field}.orientation")
             if orientation not in {"portrait", "landscape"}:
                 raise ToolError("bad_input", f"{field}.orientation is unsupported.")
-        for name in section_keys.difference({"type", "start", "orientation"}):
-            if name in block:
-                required_number(block[name], f"{field}.{name}", minimum=0)
+        validate_section_spec(block, field, extra_keys={"type", "start"})
         return
     raise ToolError("bad_input", f"{field}.type is unsupported.", details={"type": block_type})
 
@@ -1406,13 +2177,118 @@ def validate_metadata(metadata: Any, field: str) -> None:
             string_value(value, f"{field}.{key}")
 
 
+def validate_section_spec(spec: Any, field: str, *, extra_keys: set[str] | None = None) -> None:
+    """Validate page geometry and numbering controls."""
+
+    if not isinstance(spec, dict):
+        raise ToolError("bad_input", f"{field} must be an object.")
+    allow_keys(spec, SECTION_KEYS | (extra_keys or set()), field)
+    if "paper_size" in spec and spec["paper_size"] not in {"letter", "a4"}:
+        raise ToolError("bad_input", f"{field}.paper_size must be letter or a4.")
+    for name in SECTION_KEYS - {
+        "paper_size",
+        "orientation",
+        "different_first_page",
+        "page_number_start",
+        "page_number_format",
+    }:
+        if name in spec:
+            minimum = 0.1 if name in {"page_width_inches", "page_height_inches"} else 0
+            required_number(spec[name], f"{field}.{name}", minimum=minimum)
+    if spec.get("orientation") not in {None, "portrait", "landscape"}:
+        raise ToolError("bad_input", f"{field}.orientation is unsupported.")
+    if "different_first_page" in spec:
+        optional_boolean(spec["different_first_page"], f"{field}.different_first_page")
+    if "page_number_start" in spec:
+        required_integer(spec["page_number_start"], f"{field}.page_number_start", minimum=0)
+    formats = {
+        "decimal",
+        "upperRoman",
+        "lowerRoman",
+        "upperLetter",
+        "lowerLetter",
+    }
+    if "page_number_format" in spec and spec["page_number_format"] not in formats:
+        raise ToolError("bad_input", f"{field}.page_number_format is unsupported.")
+
+
+def validate_style_definitions(raw: Any, field: str) -> None:
+    """Validate paragraph and character style definitions."""
+
+    if not isinstance(raw, list):
+        raise ToolError("bad_input", f"{field} must be an array.")
+    for index, spec in enumerate(raw):
+        item = f"{field}[{index}]"
+        if not isinstance(spec, dict):
+            raise ToolError("bad_input", f"{item} must be an object.")
+        allow_keys(
+            spec,
+            {
+                "name",
+                "type",
+                "based_on",
+                "font",
+                "size_pt",
+                "bold",
+                "italic",
+                "underline",
+                "color",
+                "paragraph",
+                "outline_level",
+            },
+            item,
+        )
+        require_keys(spec, {"name", "type"}, item)
+        required_string(spec["name"], f"{item}.name")
+        if spec["type"] not in {"paragraph", "character"}:
+            raise ToolError("bad_input", f"{item}.type is unsupported.")
+        if "based_on" in spec:
+            required_string(spec["based_on"], f"{item}.based_on")
+        validate_runs(
+            [
+                {
+                    "text": "",
+                    **{
+                        key: spec[key]
+                        for key in ("font", "size_pt", "bold", "italic", "underline", "color")
+                        if key in spec
+                    },
+                }
+            ],
+            f"{item}.font",
+        )
+        if "paragraph" in spec:
+            if spec["type"] != "paragraph" or not isinstance(spec["paragraph"], dict):
+                raise ToolError("bad_input", f"{item}.paragraph requires a paragraph style.")
+            allow_keys(
+                spec["paragraph"], PARAGRAPH_LAYOUT_KEYS | {"alignment"}, f"{item}.paragraph"
+            )
+            validate_text_and_runs(spec["paragraph"], f"{item}.paragraph")
+        if "outline_level" in spec:
+            if spec["type"] != "paragraph":
+                raise ToolError("bad_input", f"{item}.outline_level requires a paragraph style.")
+            required_integer(spec["outline_level"], f"{item}.outline_level", minimum=0, maximum=9)
+
+
 def validate_create_content(content: Any, field: str = "content") -> None:
     """Validate the complete create-content object."""
 
     if not isinstance(content, dict):
         raise ToolError("bad_input", f"{field} must be an object.")
     allow_keys(
-        content, {"template", "letterhead", "metadata", "blocks", "headers", "footers"}, field
+        content,
+        {
+            "template",
+            "letterhead",
+            "metadata",
+            "section",
+            "styles",
+            "update_fields_on_open",
+            "blocks",
+            "headers",
+            "footers",
+        },
+        field,
     )
     if "template" in content and "letterhead" in content:
         raise ToolError("bad_input", f"{field} must specify only one of template or letterhead.")
@@ -1421,6 +2297,12 @@ def validate_create_content(content: Any, field: str = "content") -> None:
             required_string(content[name], f"{field}.{name}")
     if "metadata" in content:
         validate_metadata(content["metadata"], f"{field}.metadata")
+    if "section" in content:
+        validate_section_spec(content["section"], f"{field}.section")
+    if "styles" in content:
+        validate_style_definitions(content["styles"], f"{field}.styles")
+    if "update_fields_on_open" in content:
+        optional_boolean(content["update_fields_on_open"], f"{field}.update_fields_on_open")
     if "blocks" in content:
         validate_blocks(content["blocks"], f"{field}.blocks", allow_sections=True)
     for name in ("headers", "footers"):
@@ -1500,7 +2382,7 @@ def validate_edit_operation(operation: Any, field: str) -> None:
         table = operation["table"]
         if not isinstance(table, dict):
             raise ToolError("bad_input", f"{field}.table must be an object.")
-        allow_keys(table, {"type", "rows", "style", "header_rows"}, f"{field}.table")
+        allow_keys(table, TABLE_KEYS, f"{field}.table")
         if table.get("type", "table") != "table":
             raise ToolError("bad_input", f"{field}.table.type must be table.")
         validate_table_block(table, f"{field}.table")
@@ -1516,28 +2398,86 @@ def validate_edit_operation(operation: Any, field: str) -> None:
     if operation_type == "update_table":
         allow_keys(
             operation,
-            {"type", "table_index", "row", "column", "value", "style"},
+            {
+                "type",
+                "table_index",
+                "row",
+                "column",
+                "value",
+                "style",
+                "header_rows",
+                "layout",
+                "column_widths_inches",
+                "allow_row_split",
+                "row_allow_split",
+            },
             field,
         )
-        require_keys(operation, {"table_index", "row", "column", "value"}, field)
+        require_keys(operation, {"table_index"}, field)
+        cell_keys = {"row", "column", "value"}
+        if cell_keys.intersection(operation) and not cell_keys.issubset(operation):
+            raise ToolError("bad_input", f"{field} must supply row, column, and value together.")
         for name in ("table_index", "row", "column"):
+            if name not in operation:
+                continue
             required_integer(operation[name], f"{field}.{name}", minimum=0)
-        validate_cell_value(operation["value"], f"{field}.value")
+        if "value" in operation:
+            validate_cell_value(operation["value"], f"{field}.value")
         if "style" in operation:
             required_string(operation["style"], f"{field}.style")
+        if "header_rows" in operation:
+            required_integer(operation["header_rows"], f"{field}.header_rows", minimum=0)
+        if operation.get("layout") not in {None, "autofit", "fixed"}:
+            raise ToolError("bad_input", f"{field}.layout is unsupported.")
+        if "column_widths_inches" in operation:
+            widths = operation["column_widths_inches"]
+            if not isinstance(widths, list) or not widths:
+                raise ToolError("bad_input", f"{field}.column_widths_inches must be an array.")
+            for index, width in enumerate(widths):
+                required_number(width, f"{field}.column_widths_inches[{index}]", minimum=0.1)
+        if "allow_row_split" in operation:
+            optional_boolean(operation["allow_row_split"], f"{field}.allow_row_split")
+        if "row_allow_split" in operation:
+            values = operation["row_allow_split"]
+            if not isinstance(values, list):
+                raise ToolError("bad_input", f"{field}.row_allow_split must be an array.")
+            for index, value in enumerate(values):
+                optional_boolean(value, f"{field}.row_allow_split[{index}]")
         return
     if operation_type in {"insert_image", "replace_image"}:
         index_name = "paragraph_index" if operation_type == "insert_image" else "inline_image_index"
-        allowed = {"type", "path", "width_inches", "height_inches", index_name}
+        allowed = {
+            "type",
+            "path",
+            "width_inches",
+            "height_inches",
+            index_name,
+            "story_address",
+            "alt_text",
+            "decorative",
+            "title",
+        }
         allow_keys(operation, allowed, field)
-        required = {"path", "inline_image_index"} if operation_type == "replace_image" else {"path"}
+        required = {"path"} if operation_type == "replace_image" else {"path"}
         require_keys(operation, required, field)
+        if operation_type == "replace_image" and not {
+            "inline_image_index",
+            "story_address",
+        }.intersection(operation):
+            raise ToolError("bad_input", f"{field} requires inline_image_index or story_address.")
         required_string(operation["path"], f"{field}.path")
         if index_name in operation:
             required_integer(operation[index_name], f"{field}.{index_name}", minimum=0)
         for name in ("width_inches", "height_inches"):
             if name in operation:
                 required_number(operation[name], f"{field}.{name}", minimum=0.01)
+        for name in ("alt_text", "title", "story_address"):
+            if name in operation:
+                string_value(operation[name], f"{field}.{name}")
+        if "decorative" in operation:
+            optional_boolean(operation["decorative"], f"{field}.decorative")
+        if operation.get("decorative") and operation.get("alt_text"):
+            raise ToolError("bad_input", f"{field} cannot combine decorative and alt_text.")
         return
     if operation_type == "set_metadata":
         allow_keys(operation, {"type", "metadata"}, field)
@@ -1545,8 +2485,13 @@ def validate_edit_operation(operation: Any, field: str) -> None:
         validate_metadata(operation["metadata"], f"{field}.metadata")
         return
     if operation_type in {"set_header", "set_footer"}:
-        allow_keys(operation, {"type", "section_index", "kind", "mode", "blocks"}, field)
-        require_keys(operation, {"blocks"}, field)
+        allow_keys(
+            operation,
+            {"type", "section_index", "kind", "mode", "blocks", "link_to_previous"},
+            field,
+        )
+        if "link_to_previous" not in operation:
+            require_keys(operation, {"blocks"}, field)
         if "section_index" in operation:
             required_integer(operation["section_index"], f"{field}.section_index", minimum=0)
         if "kind" in operation:
@@ -1557,7 +2502,31 @@ def validate_edit_operation(operation: Any, field: str) -> None:
             mode = required_string(operation["mode"], f"{field}.mode")
             if mode not in {"replace", "append"}:
                 raise ToolError("bad_input", f"{field}.mode is unsupported.")
-        validate_blocks(operation["blocks"], f"{field}.blocks", allow_sections=False)
+        if "link_to_previous" in operation:
+            optional_boolean(operation["link_to_previous"], f"{field}.link_to_previous")
+            if operation["link_to_previous"] and "blocks" in operation:
+                raise ToolError(
+                    "bad_input",
+                    f"{field} cannot write blocks while link_to_previous is true.",
+                )
+        if "blocks" in operation:
+            validate_blocks(operation["blocks"], f"{field}.blocks", allow_sections=False)
+        return
+    if operation_type == "configure_section":
+        allow_keys(operation, {"type", "section_index"} | SECTION_KEYS, field)
+        if "section_index" in operation:
+            required_integer(operation["section_index"], f"{field}.section_index", minimum=0)
+        validate_section_spec(operation, field, extra_keys={"type", "section_index"})
+        return
+    if operation_type == "upsert_style":
+        allow_keys(operation, {"type", "style"}, field)
+        require_keys(operation, {"style"}, field)
+        validate_style_definitions([operation["style"]], f"{field}.style")
+        return
+    if operation_type == "set_update_fields_on_open":
+        allow_keys(operation, {"type", "enabled"}, field)
+        require_keys(operation, {"enabled"}, field)
+        optional_boolean(operation["enabled"], f"{field}.enabled")
         return
     raise ToolError(
         "bad_input",
@@ -1688,7 +2657,7 @@ def image_dimensions(spec: dict[str, Any]) -> tuple[Any | None, Any | None]:
 
 
 def append_field(paragraph: Paragraph, field_name: str, spec: dict[str, Any]) -> None:
-    """Append PAGE or TOC complex-field markup."""
+    """Append bounded common complex-field markup."""
 
     if field_name == "page_number":
         instruction = " PAGE "
@@ -1705,12 +2674,39 @@ def append_field(paragraph: Paragraph, field_name: str, spec: dict[str, Any]) ->
             "field.placeholder",
         )
     else:
-        raise ToolError("unsupported_operation", f"Unsupported field type: {field_name}")
+        defaults = {
+            "num_pages": (" NUMPAGES ", "1"),
+            "section_pages": (" SECTIONPAGES ", "1"),
+            "seq": (" SEQ Figure \\* ARABIC ", "1"),
+            "ref": (" REF Bookmark ", "Error! Reference source not found."),
+            "date": (' DATE \\@ "MMMM d, yyyy" ', "Date"),
+        }
+        if field_name not in defaults:
+            raise ToolError("unsupported_operation", f"Unsupported field type: {field_name}")
+        instruction, default_placeholder = defaults[field_name]
+        if "instruction" in spec:
+            instruction = string_value(spec["instruction"], "field.instruction")
+        expected = {
+            "seq": "SEQ",
+            "ref": "REF",
+            "date": "DATE",
+        }.get(field_name)
+        if expected and not instruction.strip().upper().startswith(expected):
+            raise ToolError("bad_input", f"{field_name} instruction must begin with {expected}.")
+        if len(instruction) > 512 or any(character in instruction for character in "\r\n\x00"):
+            raise ToolError("bad_input", "field.instruction is unsafe or too long.")
+        placeholder = string_value(
+            spec.get("placeholder", default_placeholder), "field.placeholder"
+        )
 
+    if len(instruction) > 512 or any(character in instruction for character in "\r\n\x00"):
+        raise ToolError("bad_input", "field.instruction is unsafe or too long.")
     begin_run = OxmlElement("w:r")
     begin = OxmlElement("w:fldChar")
     begin.set(qn("w:fldCharType"), "begin")
     begin.set(qn("w:dirty"), "true")
+    if optional_boolean(spec.get("locked"), "field.locked"):
+        begin.set(qn("w:fldLock"), "true")
     begin_run.append(begin)
 
     instruction_run = OxmlElement("w:r")
@@ -1771,7 +2767,8 @@ def add_paragraph_block(
         image = resolve_path(block.get("path"), base_dir, "image.path")
         validate_image(image)
         width, height = image_dimensions(block)
-        paragraph.add_run().add_picture(str(image), width=width, height=height)
+        shape = paragraph.add_run().add_picture(str(image), width=width, height=height)
+        set_drawing_accessibility(shape._inline, block)
         add_runs(paragraph, {"runs": block.get("suffix_runs", [])})
     elif block_type == "field":
         paragraph = container.add_paragraph()
@@ -1788,7 +2785,61 @@ def add_paragraph_block(
             f"Block type is not paragraph-like: {block_type}",
         )
     apply_paragraph_format(paragraph, block)
+    if block_type == "image" and ("caption" in block or "attribution" in block):
+        caption_text = string_value(block.get("caption", ""), "image.caption")
+        attribution = string_value(block.get("attribution", ""), "image.attribution")
+        text = caption_text + (f" — {attribution}" if attribution else "")
+        caption = container.add_paragraph(text)
+        assign_named_style(caption, block.get("caption_style", "Caption"), "image.caption_style")
+        paragraph.paragraph_format.keep_with_next = True
+        paragraph.paragraph_format.keep_together = True
+        caption.paragraph_format.keep_together = True
     return paragraph
+
+
+def set_drawing_accessibility(inline: Any, spec: dict[str, Any]) -> None:
+    """Write title, description, and decorative drawing metadata."""
+
+    doc_pr = inline.find(qn("wp:docPr"))
+    if doc_pr is None:
+        return
+    for name in ("descr", "title"):
+        doc_pr.attrib.pop(name, None)
+    if spec.get("alt_text"):
+        doc_pr.set("descr", string_value(spec["alt_text"], "image.alt_text"))
+    if spec.get("title"):
+        doc_pr.set("title", string_value(spec["title"], "image.title"))
+    ext_list = doc_pr.find(f"{{{A_NS}}}extLst")
+    if ext_list is not None:
+        for extension in list(ext_list):
+            if extension.get("uri") == DECORATIVE_EXTENSION_URI:
+                ext_list.remove(extension)
+        if not len(ext_list):
+            doc_pr.remove(ext_list)
+    if optional_boolean(spec.get("decorative"), "image.decorative"):
+        ext_list = doc_pr.find(f"{{{A_NS}}}extLst")
+        if ext_list is None:
+            ext_list = etree.Element(f"{{{A_NS}}}extLst")
+            doc_pr.append(ext_list)
+        extension = etree.SubElement(ext_list, f"{{{A_NS}}}ext")
+        extension.set("uri", DECORATIVE_EXTENSION_URI)
+        decorative = etree.Element(f"{{{A14_NS}}}decorative", nsmap={"a14": A14_NS})
+        decorative.set("val", "1")
+        extension.append(decorative)
+
+
+def apply_cell_widths(table: Table, widths: list[Any]) -> None:
+    """Set preferred widths, summing covered grid columns for merged cells."""
+
+    for column, width in zip(table.columns, widths, strict=True):
+        column.width = width
+    for row in table.rows:
+        grid_column = 0
+        for tc in row._tr.tc_lst:
+            grid_span = tc.tcPr.find(qn("w:gridSpan"))
+            span = int(grid_span.get(qn("w:val"), "1")) if grid_span is not None else 1
+            _Cell(tc, table).width = sum(widths[grid_column : grid_column + span])
+            grid_column += span
 
 
 def fill_table(table: Table, block: dict[str, Any]) -> None:
@@ -1809,12 +2860,37 @@ def fill_table(table: Table, block: dict[str, Any]) -> None:
             required_string(block["style"], "table.style"),
             "table.style",
         )
+    layout = block.get(
+        "layout",
+        "fixed" if "column_widths_inches" in block else "autofit",
+    )
+    table.autofit = layout == "autofit"
+    if "column_widths_inches" in block:
+        widths = [
+            Inches(required_number(value, "column_width", minimum=0.1))
+            for value in block["column_widths_inches"]
+        ]
+        apply_cell_widths(table, widths)
     header_rows = required_integer(block.get("header_rows", 0), "header_rows", minimum=0)
-    for row in table.rows[:header_rows]:
+    for row_index, row in enumerate(table.rows):
         tr_pr = row._tr.get_or_add_trPr()
-        repeat = OxmlElement("w:tblHeader")
-        repeat.set(qn("w:val"), "true")
-        tr_pr.append(repeat)
+        for existing in list(tr_pr.findall(qn("w:tblHeader"))):
+            tr_pr.remove(existing)
+        if row_index < header_rows:
+            repeat = OxmlElement("w:tblHeader")
+            repeat.set(qn("w:val"), "true")
+            tr_pr.append(repeat)
+        for existing in list(tr_pr.findall(qn("w:cantSplit"))):
+            tr_pr.remove(existing)
+        row_split = (
+            block["row_allow_split"][row_index]
+            if "row_allow_split" in block
+            else block.get("allow_row_split", True)
+        )
+        if not optional_boolean(row_split, "allow_row_split", default=True):
+            cant_split = OxmlElement("w:cantSplit")
+            cant_split.set(qn("w:val"), "true")
+            tr_pr.append(cant_split)
 
 
 def set_cell_value(cell: _Cell, value: Any) -> None:
@@ -1845,7 +2921,25 @@ def add_table_block(container: Any, block: dict[str, Any]) -> Table:
     if columns < 1:
         raise ToolError("bad_input", "A table must have at least one column.")
     if isinstance(container, (_Header, _Footer)):
-        table = container.add_table(rows=len(rows), cols=columns, width=Inches(6))
+        document = container._document_part.document
+        usable = next(
+            (
+                section.page_width - section.left_margin - section.right_margin
+                for section in document.sections
+                if (
+                    section.header.part is container.part
+                    or section.first_page_header.part is container.part
+                    or section.even_page_header.part is container.part
+                    or section.footer.part is container.part
+                    or section.first_page_footer.part is container.part
+                    or section.even_page_footer.part is container.part
+                )
+            ),
+            document.sections[0].page_width
+            - document.sections[0].left_margin
+            - document.sections[0].right_margin,
+        )
+        table = container.add_table(rows=len(rows), cols=columns, width=usable)
     else:
         table = container.add_table(rows=len(rows), cols=columns)
     fill_table(table, block)
@@ -1855,13 +2949,40 @@ def add_table_block(container: Any, block: dict[str, Any]) -> Table:
 def configure_section(section: Any, spec: dict[str, Any]) -> None:
     """Apply supported section page settings."""
 
-    if "orientation" in spec:
-        orientation = spec["orientation"]
-        if orientation not in {"portrait", "landscape"}:
-            raise ToolError("bad_input", "section.orientation must be portrait or landscape.")
-        desired = WD_ORIENT.LANDSCAPE if orientation == "landscape" else WD_ORIENT.PORTRAIT
-        if section.orientation != desired:
-            section.orientation = desired
+    requested_orientation = spec.get("orientation")
+    if requested_orientation not in {None, "portrait", "landscape"}:
+        raise ToolError("bad_input", "section.orientation must be portrait or landscape.")
+    current_landscape = section.orientation == WD_ORIENT.LANDSCAPE or (
+        section.page_width is not None
+        and section.page_height is not None
+        and section.page_width > section.page_height
+    )
+    final_landscape = (
+        requested_orientation == "landscape"
+        if requested_orientation is not None
+        else current_landscape
+    )
+    if "paper_size" in spec:
+        sizes = {"letter": (8.5, 11.0), "a4": (8.2677, 11.6929)}
+        width, height = sizes[required_string(spec["paper_size"], "section.paper_size")]
+        if final_landscape:
+            width, height = height, width
+        section.page_width, section.page_height = Inches(width), Inches(height)
+    if "page_width_inches" in spec:
+        section.page_width = Inches(required_number(spec["page_width_inches"], "page_width_inches"))
+    if "page_height_inches" in spec:
+        section.page_height = Inches(
+            required_number(spec["page_height_inches"], "page_height_inches")
+        )
+    if requested_orientation is not None:
+        desired = WD_ORIENT.LANDSCAPE if final_landscape else WD_ORIENT.PORTRAIT
+        section.orientation = desired
+        dimensions_are_landscape = (
+            section.page_width is not None
+            and section.page_height is not None
+            and section.page_width > section.page_height
+        )
+        if dimensions_are_landscape != final_landscape:
             section.page_width, section.page_height = section.page_height, section.page_width
     margin_fields = {
         "top_margin_inches": "top_margin",
@@ -1878,6 +2999,63 @@ def configure_section(section: Any, spec: dict[str, Any]) -> None:
                 property_name,
                 Inches(required_number(spec[input_name], input_name, minimum=0)),
             )
+    if (
+        section.page_width is not None
+        and section.left_margin is not None
+        and section.right_margin is not None
+        and section.page_width <= section.left_margin + section.right_margin
+    ):
+        raise ToolError(
+            "bad_input",
+            "Section left and right margins must leave positive printable width.",
+        )
+    if (
+        section.page_height is not None
+        and section.top_margin is not None
+        and section.bottom_margin is not None
+        and section.page_height <= section.top_margin + section.bottom_margin
+    ):
+        raise ToolError(
+            "bad_input",
+            "Section top and bottom margins must leave positive printable height.",
+        )
+    if "different_first_page" in spec:
+        section.different_first_page_header_footer = optional_boolean(
+            spec["different_first_page"], "different_first_page"
+        )
+    if "page_number_start" in spec or "page_number_format" in spec:
+        pg_num = section._sectPr.find(qn("w:pgNumType"))
+        if pg_num is None:
+            pg_num = OxmlElement("w:pgNumType")
+            later_children = {
+                qn(f"w:{name}")
+                for name in (
+                    "cols",
+                    "formProt",
+                    "vAlign",
+                    "noEndnote",
+                    "titlePg",
+                    "textDirection",
+                    "bidi",
+                    "rtlGutter",
+                    "docGrid",
+                    "printerSettings",
+                    "sectPrChange",
+                )
+            }
+            insertion_index = next(
+                (
+                    index
+                    for index, child in enumerate(section._sectPr)
+                    if child.tag in later_children
+                ),
+                len(section._sectPr),
+            )
+            section._sectPr.insert(insertion_index, pg_num)
+        if "page_number_start" in spec:
+            pg_num.set(qn("w:start"), str(spec["page_number_start"]))
+        if "page_number_format" in spec:
+            pg_num.set(qn("w:fmt"), spec["page_number_format"])
 
 
 def apply_blocks(
@@ -2037,6 +3215,65 @@ def set_metadata(document: DocumentObject, metadata: Any) -> int:
     return len(metadata)
 
 
+def set_update_fields_on_open(document: DocumentObject, enabled: bool) -> None:
+    """Set Word's update-fields-on-open document setting without duplicates."""
+
+    settings = document.settings.element
+    for existing in list(settings.findall(qn("w:updateFields"))):
+        settings.remove(existing)
+    element = OxmlElement("w:updateFields")
+    element.set(qn("w:val"), "true" if enabled else "false")
+    settings.append(element)
+
+
+def upsert_style(document: DocumentObject, spec: dict[str, Any]) -> None:
+    """Create or update a paragraph/character named style."""
+
+    name = required_string(spec["name"], "style.name")
+    style_type = WD_STYLE_TYPE.PARAGRAPH if spec["type"] == "paragraph" else WD_STYLE_TYPE.CHARACTER
+    try:
+        style = document.styles[name]
+        if style.type != style_type:
+            raise ToolError(
+                "bad_input", "Existing style has a different type.", details={"style": name}
+            )
+    except KeyError:
+        style = document.styles.add_style(name, style_type)
+    if "based_on" in spec:
+        try:
+            style.base_style = document.styles[spec["based_on"]]
+        except KeyError as exc:
+            raise ToolError("bad_input", "style.based_on does not exist.") from exc
+    font_spec = {
+        key: spec[key]
+        for key in ("font", "size_pt", "bold", "italic", "underline", "color")
+        if key in spec
+    }
+    apply_run_format(type("_StyleRun", (), {"font": style.font, "style": None})(), font_spec)
+    if spec["type"] == "paragraph" and "paragraph" in spec:
+        paragraph_spec = spec["paragraph"]
+        pseudo = type(
+            "_StyleParagraph",
+            (),
+            {"paragraph_format": style.paragraph_format, "alignment": None},
+        )()
+        apply_paragraph_format(pseudo, paragraph_spec)
+        if "alignment" in paragraph_spec:
+            style.paragraph_format.alignment = {
+                "left": WD_ALIGN_PARAGRAPH.LEFT,
+                "center": WD_ALIGN_PARAGRAPH.CENTER,
+                "right": WD_ALIGN_PARAGRAPH.RIGHT,
+                "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+            }[paragraph_spec["alignment"]]
+    if "outline_level" in spec:
+        p_pr = style.element.get_or_add_pPr()
+        for existing in list(p_pr.findall(qn("w:outlineLvl"))):
+            p_pr.remove(existing)
+        outline = OxmlElement("w:outlineLvl")
+        outline.set(qn("w:val"), str(spec["outline_level"]))
+        p_pr.append(outline)
+
+
 def create_document(
     spec: dict[str, Any],
     base_dir: Path,
@@ -2073,7 +3310,14 @@ def create_document(
     else:
         document = Document()
 
+    if "section" in content:
+        configure_section(document.sections[0], content["section"])
+    for style in content.get("styles", []):
+        upsert_style(document, style)
+    if "update_fields_on_open" in content:
+        set_update_fields_on_open(document, content["update_fields_on_open"])
     counts = apply_blocks(document, content.get("blocks", []), base_dir, allow_sections=True)
+    counts["styles"] += len(content.get("styles", []))
     counts["metadata"] += set_metadata(document, content.get("metadata"))
     counts["headers"] += apply_story_configuration(
         document, content.get("headers"), base_dir, header=True
@@ -2493,7 +3737,7 @@ def insert_table(document: DocumentObject, operation: dict[str, Any]) -> None:
 
 
 def update_table(document: DocumentObject, operation: dict[str, Any]) -> None:
-    """Update one table cell and optionally its table style."""
+    """Update table properties and optionally one cell."""
 
     table = table_at(document, operation.get("table_index"))
     if "style" in operation:
@@ -2502,11 +3746,66 @@ def update_table(document: DocumentObject, operation: dict[str, Any]) -> None:
             required_string(operation["style"], "update_table.style"),
             "update_table.style",
         )
-    row_index = required_integer(operation.get("row"), "update_table.row", minimum=0)
-    column_index = required_integer(operation.get("column"), "update_table.column", minimum=0)
-    if row_index >= len(table.rows) or column_index >= len(table.rows[row_index].cells):
-        raise ToolError("bad_input", "Table cell index is out of range.")
-    set_cell_value(table.cell(row_index, column_index), operation.get("value", ""))
+    property_spec = {
+        key: operation[key]
+        for key in (
+            "header_rows",
+            "layout",
+            "column_widths_inches",
+            "allow_row_split",
+            "row_allow_split",
+        )
+        if key in operation
+    }
+    if "column_widths_inches" in property_spec and len(
+        property_spec["column_widths_inches"]
+    ) != len(table.columns):
+        raise ToolError("bad_input", "column_widths_inches must contain one width per column.")
+    if "header_rows" in property_spec and property_spec["header_rows"] > len(table.rows):
+        raise ToolError("bad_input", "header_rows exceeds the table row count.")
+    if "row_allow_split" in property_spec and len(property_spec["row_allow_split"]) != len(
+        table.rows
+    ):
+        raise ToolError("bad_input", "row_allow_split must contain one Boolean per row.")
+    if property_spec:
+        fill_table_properties(table, property_spec)
+    if "row" in operation:
+        row_index = required_integer(operation["row"], "update_table.row", minimum=0)
+        column_index = required_integer(operation["column"], "update_table.column", minimum=0)
+        if row_index >= len(table.rows) or column_index >= len(table.rows[row_index].cells):
+            raise ToolError("bad_input", "Table cell index is out of range.")
+        set_cell_value(table.cell(row_index, column_index), operation["value"])
+
+
+def fill_table_properties(table: Table, spec: dict[str, Any]) -> None:
+    """Apply table layout properties without touching cell content."""
+
+    table.autofit = spec.get("layout", "autofit" if table.autofit else "fixed") == "autofit"
+    if "column_widths_inches" in spec:
+        widths = [Inches(value) for value in spec["column_widths_inches"]]
+        apply_cell_widths(table, widths)
+    header_rows = spec.get("header_rows")
+    for row_index, row in enumerate(table.rows):
+        tr_pr = row._tr.get_or_add_trPr()
+        if header_rows is not None:
+            for node in list(tr_pr.findall(qn("w:tblHeader"))):
+                tr_pr.remove(node)
+            if row_index < header_rows:
+                node = OxmlElement("w:tblHeader")
+                node.set(qn("w:val"), "true")
+                tr_pr.append(node)
+        if "allow_row_split" in spec or "row_allow_split" in spec:
+            for node in list(tr_pr.findall(qn("w:cantSplit"))):
+                tr_pr.remove(node)
+            allows = (
+                spec["row_allow_split"][row_index]
+                if "row_allow_split" in spec
+                else spec["allow_row_split"]
+            )
+            if not allows:
+                node = OxmlElement("w:cantSplit")
+                node.set(qn("w:val"), "true")
+                tr_pr.append(node)
 
 
 def insert_image(
@@ -2523,7 +3822,8 @@ def insert_image(
         paragraph = paragraph_at(document, operation["paragraph_index"])
     else:
         paragraph = document.add_paragraph()
-    paragraph.add_run().add_picture(str(image), width=width, height=height)
+    shape = paragraph.add_run().add_picture(str(image), width=width, height=height)
+    set_drawing_accessibility(shape._inline, operation)
 
 
 def replace_image(
@@ -2533,7 +3833,15 @@ def replace_image(
 ) -> None:
     """Replace one body inline image relationship without flattening its drawing."""
 
-    index = required_integer(operation.get("inline_image_index"), "inline_image_index", minimum=0)
+    if "story_address" in operation:
+        match = re.fullmatch(r"([^#]+)#inline-(\d+)", operation["story_address"])
+        if not match or match.group(1) != "word/document.xml":
+            raise ToolError("bad_input", "Only body story_address image replacement is supported.")
+        index = int(match.group(2))
+    else:
+        index = required_integer(
+            operation.get("inline_image_index"), "inline_image_index", minimum=0
+        )
     shapes = document.inline_shapes
     if index >= len(shapes):
         raise ToolError("bad_input", "inline_image_index is out of range.")
@@ -2549,6 +3857,21 @@ def replace_image(
             shapes[index].width = width
         if height is not None:
             shapes[index].height = height
+        if {"alt_text", "decorative", "title"}.intersection(operation):
+            decorative = (
+                inline.docPr.find(
+                    f"{{{A_NS}}}extLst/{{{A_NS}}}ext"
+                    f"[@uri='{DECORATIVE_EXTENSION_URI}']/"
+                    f"{{{A14_NS}}}decorative[@val='1']"
+                )
+                is not None
+            )
+            existing = {
+                "alt_text": inline.docPr.get("descr"),
+                "title": inline.docPr.get("title"),
+                "decorative": decorative,
+            }
+            set_drawing_accessibility(inline, {**existing, **operation})
     except Exception as exc:
         raise ToolError(
             "validation_failed",
@@ -2574,7 +3897,14 @@ def set_story_operation(
         required_string(operation.get("kind", "default"), "story.kind"),
         header,
     )
-    story.is_linked_to_previous = False
+    if operation.get("link_to_previous") and "blocks" in operation:
+        raise ToolError("bad_input", "Cannot write blocks while link_to_previous is true.")
+    if "link_to_previous" in operation:
+        story.is_linked_to_previous = operation["link_to_previous"]
+        if operation["link_to_previous"] and "blocks" not in operation:
+            return
+    else:
+        story.is_linked_to_previous = False
     mode = operation.get("mode", "replace")
     if mode == "replace":
         clear_story(story)
@@ -2619,6 +3949,15 @@ def apply_edit_operations(
             set_story_operation(document, operation, base_dir, header=True)
         elif operation_type == "set_footer":
             set_story_operation(document, operation, base_dir, header=False)
+        elif operation_type == "configure_section":
+            index = required_integer(operation.get("section_index", 0), "section_index", minimum=0)
+            if index >= len(document.sections):
+                raise ToolError("bad_input", "section_index is out of range.")
+            configure_section(document.sections[index], operation)
+        elif operation_type == "upsert_style":
+            upsert_style(document, operation["style"])
+        elif operation_type == "set_update_fields_on_open":
+            set_update_fields_on_open(document, operation["enabled"])
         else:
             raise ToolError(
                 "unsupported_operation",
@@ -2771,6 +4110,7 @@ def validate_pdf(path: Path) -> dict[str, Any]:
                 )
             text_characters = 0
             extraction_failures = 0
+            page_quality: list[dict[str, Any]] = []
             text_pages_checked = min(page_count, MAX_PDF_TEXT_PAGES)
             for index in range(text_pages_checked):
                 try:
@@ -2792,6 +4132,31 @@ def validate_pdf(path: Path) -> dict[str, Any]:
                     extraction_failures += 1
                     continue
                 text_characters += len(extracted)
+                media_box = page.mediabox
+                normalized = " ".join(extracted.split())
+                resources = page.get("/Resources")
+                if resources is not None and hasattr(resources, "get_object"):
+                    resources = resources.get_object()
+                xobjects = resources.get("/XObject") if resources is not None else None
+                if xobjects is not None and hasattr(xobjects, "get_object"):
+                    xobjects = xobjects.get_object()
+                has_nontext_content = bool(xobjects)
+                low_text = len(normalized) < 20
+                page_quality.append(
+                    {
+                        "page_index": index,
+                        "width_points": round(float(media_box.width), 3),
+                        "height_points": round(float(media_box.height), 3),
+                        "text_characters": len(extracted),
+                        "low_text": low_text,
+                        "has_nontext_content": has_nontext_content,
+                        "nearly_blank": low_text and not has_nontext_content,
+                        "content_anchors": {
+                            "start": normalized[:80],
+                            "end": normalized[-80:] if normalized else "",
+                        },
+                    }
+                )
                 if text_characters > MAX_PDF_TEXT_CHARACTERS:
                     raise ToolError(
                         "resource_limit",
@@ -2817,6 +4182,20 @@ def validate_pdf(path: Path) -> dict[str, Any]:
             "text_character_limit": MAX_PDF_TEXT_CHARACTERS,
             "decompressed_stream_byte_limit": MAX_PDF_DECOMPRESSED_STREAM_BYTES,
             "text_extraction_failures": extraction_failures,
+            "content_quality_report": {
+                "deterministic": True,
+                "method": "pypdf text extraction and page-resource XObject detection",
+                "renderer_version": distribution_version("pypdf"),
+                "limitation": (
+                    "This is not visual rendering. Non-text detection is limited to page "
+                    "XObject resources and may not identify all visible vector content."
+                ),
+                "pages": page_quality,
+                "nearly_blank_pages": [
+                    page["page_index"] for page in page_quality if page["nearly_blank"]
+                ],
+                "raster_review_artifacts": [],
+            },
         }
     except ToolError:
         raise

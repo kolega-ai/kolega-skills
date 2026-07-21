@@ -22,9 +22,12 @@ from typing import Any
 from xml.etree import ElementTree
 
 from docx import Document
+from docx.enum.section import WD_ORIENT, WD_SECTION
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Inches
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import DecodedStreamObject, NameObject
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject, NumberObject
 
 CLI_TIMEOUT_SECONDS = 30
 MAX_PDF_BYTES = 64 * 1024 * 1024
@@ -150,6 +153,50 @@ def add_custom_xml_part(source: Path, destination: Path) -> None:
         target_zip.writestr("customXml/smoke-extra.xml", b"<smoke>extra</smoke>")
 
 
+def rewrite_font_references(
+    source: Path, destination: Path, font_name: str, *, add_decoys: bool = False
+) -> None:
+    """Rewrite real font references and optionally add misleading non-font attributes."""
+
+    word_namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    font_attributes = tuple(
+        f"{{{word_namespace}}}{name}" for name in ("ascii", "hAnsi", "eastAsia", "cs")
+    )
+    with (
+        zipfile.ZipFile(source) as source_zip,
+        zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as target_zip,
+    ):
+        for info in source_zip.infolist():
+            data = source_zip.read(info)
+            if info.filename.startswith("word/") and info.filename.endswith(".xml"):
+                root = ElementTree.fromstring(data)
+                for element in root.iter(f"{{{word_namespace}}}rFonts"):
+                    for attribute in font_attributes:
+                        if element.get(attribute) is not None:
+                            element.set(attribute, font_name)
+                if info.filename.startswith("word/theme/"):
+                    for element in root.iter():
+                        if element.get("typeface") is not None:
+                            element.set("typeface", font_name)
+                if add_decoys and info.filename == "word/settings.xml":
+                    ElementTree.SubElement(
+                        root,
+                        f"{{{word_namespace}}}lang",
+                        {f"{{{word_namespace}}}eastAsia": "ja-JP"},
+                    )
+                    ElementTree.SubElement(
+                        root,
+                        f"{{{word_namespace}}}decimalSymbol",
+                        {
+                            f"{{{word_namespace}}}val": ".",
+                            f"{{{word_namespace}}}ascii": ".",
+                            f"{{{word_namespace}}}hAnsi": ",",
+                        },
+                    )
+                data = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            target_zip.writestr(info, data)
+
+
 def write_pdf(path: Path, pages: int) -> None:
     """Write a deterministic blank PDF fixture."""
 
@@ -170,6 +217,62 @@ def write_compressed_stream_pdf(path: Path) -> None:
     page[NameObject("/Contents")] = writer._add_object(stream.flate_encode())
     with path.open("wb") as handle:
         writer.write(handle)
+
+
+def write_image_only_pdf(path: Path) -> None:
+    """Write a one-page PDF whose only visible content is an image XObject."""
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=72, height=72)
+    image = DecodedStreamObject()
+    image.set_data(b"\x80")
+    image.update(
+        {
+            NameObject("/Type"): NameObject("/XObject"),
+            NameObject("/Subtype"): NameObject("/Image"),
+            NameObject("/Width"): NumberObject(1),
+            NameObject("/Height"): NumberObject(1),
+            NameObject("/ColorSpace"): NameObject("/DeviceGray"),
+            NameObject("/BitsPerComponent"): NumberObject(8),
+        }
+    )
+    image_reference = writer._add_object(image)
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/XObject"): DictionaryObject({NameObject("/ImSmoke"): image_reference})}
+    )
+    contents = DecodedStreamObject()
+    contents.set_data(b"q 36 0 0 36 18 18 cm /ImSmoke Do Q")
+    page[NameObject("/Contents")] = writer._add_object(contents)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def rewrite_theme_tokens(source: Path, destination: Path) -> None:
+    """Reference HAnsi theme tokens and give major/minor Latin fonts distinct names."""
+
+    word_namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    drawing_namespace = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    with (
+        zipfile.ZipFile(source) as source_zip,
+        zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as target_zip,
+    ):
+        for info in source_zip.infolist():
+            data = source_zip.read(info)
+            if info.filename.startswith("word/") and info.filename.endswith(".xml"):
+                root = ElementTree.fromstring(data)
+                for fonts in root.iter(f"{{{word_namespace}}}rFonts"):
+                    fonts.attrib.clear()
+                    fonts.set(f"{{{word_namespace}}}hAnsiTheme", "majorHAnsi")
+                    fonts.set(f"{{{word_namespace}}}asciiTheme", "minorHAnsi")
+                if info.filename.startswith("word/theme/"):
+                    major = root.find(f".//{{{drawing_namespace}}}majorFont")
+                    minor = root.find(f".//{{{drawing_namespace}}}minorFont")
+                    if major is not None:
+                        major.find(f"{{{drawing_namespace}}}latin").set("typeface", "Major Smoke")
+                    if minor is not None:
+                        minor.find(f"{{{drawing_namespace}}}latin").set("typeface", "Minor Smoke")
+                data = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            target_zip.writestr(info, data)
 
 
 def make_fake_soffice(path: Path) -> None:
@@ -244,7 +347,11 @@ def assert_docx_structure(path: Path, replacement_image: Path) -> None:
     assert styled.runs[1].text == "ta"
     assert styled.runs[1].italic is True
     assert any(paragraph.text == "Done Done" for paragraph in document.paragraphs)
-    assert document.tables[0].cell(1, 1).text == "Updated"
+    table = document.tables[0]
+    assert table.cell(1, 1).text == "Updated"
+    assert table.autofit is False
+    assert [round(column.width.inches, 2) for column in table.columns] == [1.4, 4.6]
+    assert all(row._tr.get_or_add_trPr().find(qn("w:cantSplit")) is not None for row in table.rows)
     assert len(document.inline_shapes) == 1
     expected_hash = hashlib.sha256(replacement_image.read_bytes()).hexdigest()
     assert inline_image_sha256(document, 0) == expected_hash
@@ -266,12 +373,51 @@ def assert_inspection(payload: dict[str, Any]) -> None:
     assert payload["counts"]["tables"] == 1
     assert payload["counts"]["inline_images"] == 1
     assert payload["counts"]["fields"] >= 1
+    fonts = payload["result"]["fonts"]
+    assert fonts["referenced"]
+    assert set(fonts["unembedded"]) == set(fonts["referenced"])
+    assert fonts["embedded"] == []
+    font_warning = next(item for item in payload["warnings"] if item["code"] == "unembedded_fonts")
+    assert set(font_warning["fonts"]) == set(fonts["unembedded"])
+    assert "PDF font embedding does not make the DOCX portable" in font_warning["message"]
     assert any(item["heading_level"] == 1 for item in payload["result"]["paragraphs"])
+    table = payload["result"]["tables"][0]
+    assert table["layout"] == "fixed"
+    assert table["column_widths_inches"] == [1.4, 4.6]
+    assert table["row_allows_split"] == [False, False]
     assert any(
         story["paragraphs"][0]["text"] == "Smoke header"
         for story in payload["result"]["headers"]
         if story["paragraphs"]
     )
+
+
+def run_font_portability_regressions(tool: Path, root: Path, source: Path) -> None:
+    """Exclude non-font attributes and distinguish allowed from custom fonts."""
+
+    for index, font_name in enumerate(("aRiAl", "Times New Roman", "Courier New")):
+        allowed = root / f"allowed-font-{index}.docx"
+        rewrite_font_references(source, allowed, font_name, add_decoys=index == 0)
+        payload = run_cli(tool, "inspect", "--input", str(allowed))
+        fonts = payload["result"]["fonts"]
+        assert fonts["referenced"] == [font_name]
+        assert "ja-JP" not in fonts["referenced"]
+        assert "." not in fonts["referenced"]
+        assert "," not in fonts["referenced"]
+        assert not any(
+            item["code"] == "nonportable_unembedded_fonts" for item in payload["warnings"]
+        )
+
+    custom = root / "custom-font.docx"
+    rewrite_font_references(source, custom, "Avenir")
+    payload = run_cli(tool, "inspect", "--input", str(custom))
+    assert payload["result"]["fonts"]["referenced"] == ["Avenir"]
+    blocker = next(
+        item for item in payload["warnings"] if item["code"] == "nonportable_unembedded_fonts"
+    )
+    assert blocker["fonts"] == ["Avenir"]
+    assert blocker["message"].startswith("RELEASE BLOCKER:")
+    assert any(item["code"] == "unembedded_fonts" for item in payload["warnings"])
 
 
 def run_pdf_check(tool: Path, source: Path, output: Path) -> dict[str, Any]:
@@ -301,6 +447,550 @@ def run_pdf_check(tool: Path, source: Path, output: Path) -> dict[str, Any]:
     }
 
 
+def run_quality_upgrade_regressions(
+    tool: Path, root: Path, image: Path, *, libreoffice: bool
+) -> dict[str, Any]:
+    """Exercise section, layout, style, table, field, and accessibility upgrades."""
+
+    spec = root / "quality-create.json"
+    created = root / "quality-created.docx"
+    write_json(
+        spec,
+        {
+            "schema_version": 1,
+            "content": {
+                "metadata": {"title": "Quality fixture", "language": "en-US"},
+                "section": {
+                    "paper_size": "letter",
+                    "margin_left_inches": 1,
+                    "different_first_page": True,
+                    "page_number_start": 3,
+                    "page_number_format": "lowerRoman",
+                },
+                "styles": [
+                    {
+                        "name": "Smoke Body",
+                        "type": "paragraph",
+                        "based_on": "Normal",
+                        "font": "Arial",
+                        "size_pt": 10,
+                        "paragraph": {
+                            "alignment": "justify",
+                            "space_after_pt": 6,
+                            "widow_control": True,
+                        },
+                        "outline_level": 0,
+                    },
+                    {
+                        "name": "Smoke Emphasis",
+                        "type": "character",
+                        "based_on": "Default Paragraph Font",
+                        "italic": True,
+                    },
+                ],
+                "update_fields_on_open": True,
+                "blocks": [
+                    {"type": "heading", "level": 1, "text": "Quality"},
+                    {
+                        "type": "paragraph",
+                        "style": "Smoke Body",
+                        "text": "Pagination controls",
+                        "space_before_pt": 4,
+                        "space_after_pt": 8,
+                        "line_spacing": "one_and_half",
+                        "left_indent_inches": 0.2,
+                        "first_line_indent_inches": 0.1,
+                        "keep_with_next": True,
+                        "keep_together": True,
+                        "page_break_before": False,
+                        "widow_control": True,
+                        "tab_stops": [
+                            {
+                                "position_inches": 2,
+                                "alignment": "right",
+                                "leader": "dots",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "table",
+                        "style": "Table Grid",
+                        "layout": "fixed",
+                        "column_widths_inches": [2, 3],
+                        "header_rows": 1,
+                        "row_allow_split": [False, True],
+                        "rows": [["Name", "Value"], ["A", "B"]],
+                    },
+                    {
+                        "type": "image",
+                        "path": image.name,
+                        "width_inches": 2,
+                        "alt_text": "A red smoke-test square",
+                        "title": "Smoke image",
+                        "caption": "Figure smoke",
+                        "attribution": "Generated fixture",
+                    },
+                    {
+                        "type": "image",
+                        "path": image.name,
+                        "width_inches": 0.5,
+                        "decorative": True,
+                    },
+                    {"type": "heading", "level": 3, "text": "Skipped heading"},
+                    {
+                        "type": "table",
+                        "rows": [["No", "Header"], ["Data", "Row"]],
+                    },
+                    {"type": "field", "field": "num_pages"},
+                    {"type": "field", "field": "seq", "instruction": " SEQ Figure "},
+                    {"type": "field", "field": "toc"},
+                    {"type": "page_break"},
+                    {"type": "paragraph", "text": "Second-page anchor"},
+                ],
+                "headers": {"first_page": [{"type": "paragraph", "text": "First"}]},
+                "footers": {
+                    "default": [{"type": "field", "field": "page_number", "prefix": "Page "}]
+                },
+            },
+        },
+    )
+    # Catch accidental schema drift in the shared section vocabulary.
+    content = json.loads(spec.read_text(encoding="utf-8"))
+    content["content"]["section"]["left_margin_inches"] = content["content"]["section"].pop(
+        "margin_left_inches"
+    )
+    write_json(spec, content)
+    run_cli(tool, "create", "--spec", str(spec), "--output", str(created))
+    inspected = run_cli(tool, "inspect", "--input", str(created))
+    result = inspected["result"]
+    section = result["sections"][0]
+    assert section["paper_size"] == "letter"
+    assert section["page_number_start"] == 3
+    assert section["page_number_format"] == "lowerRoman"
+    assert result["settings"]["update_fields_on_open"] is True
+    paragraph = next(item for item in result["paragraphs"] if item["text"] == "Pagination controls")
+    assert paragraph["layout"]["keep_with_next"] is True
+    assert paragraph["layout"]["tab_stops"][0]["position_inches"] == 2
+    table = result["tables"][0]
+    assert table["layout"] == "fixed" and table["header_rows"] == 1
+    assert table["row_allows_split"] == [False, True]
+    occurrence = result["images"]["inline_occurrences"][0]
+    assert occurrence["alt_text"] == "A red smoke-test square"
+    assert occurrence["decorative"] is False
+    assert occurrence["effective_ppi_x"] is not None
+    assert result["images"]["inline_occurrences"][1]["decorative"] is True
+    assert {field["type"] for field in result["fields"]} >= {"NUMPAGES", "SEQ", "TOC"}
+    assert any(item["code"] == "toc_placeholder_only" for item in inspected["warnings"])
+    assert not any(
+        item["code"] == "informative_image_missing_alt_text" for item in inspected["warnings"]
+    )
+    assert any(item["code"] == "heading_level_skip" for item in inspected["warnings"])
+    assert any(item["code"] == "data_table_without_header_row" for item in inspected["warnings"])
+    smoke_style = next(style for style in result["styles"] if style["name"] == "Smoke Body")
+    assert smoke_style["paragraph"]["alignment"] == "justify"
+
+    edit_spec = root / "quality-edit.json"
+    edited = root / "quality-edited.docx"
+    write_json(
+        edit_spec,
+        {
+            "schema_version": 1,
+            "operations": [
+                {
+                    "type": "insert_table",
+                    "table": {
+                        "rows": [["H"], ["V"]],
+                        "style": "Table Grid",
+                        "layout": "fixed",
+                        "column_widths_inches": [2],
+                        "header_rows": 1,
+                        "allow_row_split": False,
+                    },
+                },
+                {
+                    "type": "update_table",
+                    "table_index": 0,
+                    "style": "Table Grid",
+                    "layout": "fixed",
+                    "column_widths_inches": [2.5, 2.5],
+                    "header_rows": 1,
+                    "row_allow_split": [True, False],
+                },
+                {
+                    "type": "configure_section",
+                    "section_index": 0,
+                    "paper_size": "a4",
+                    "orientation": "portrait",
+                    "page_number_start": 1,
+                    "page_number_format": "decimal",
+                },
+                {
+                    "type": "upsert_style",
+                    "style": {
+                        "name": "Smoke Body",
+                        "type": "paragraph",
+                        "based_on": "Normal",
+                        "font": "Arial",
+                        "paragraph": {"keep_together": True},
+                    },
+                },
+                {
+                    "type": "set_header",
+                    "section_index": 0,
+                    "kind": "default",
+                    "link_to_previous": False,
+                    "blocks": [{"type": "paragraph", "text": "Default header"}],
+                },
+            ],
+        },
+    )
+    run_cli(
+        tool, "edit", "--input", str(created), "--spec", str(edit_spec), "--output", str(edited)
+    )
+    edited_result = run_cli(tool, "inspect", "--input", str(edited))["result"]
+    assert edited_result["sections"][0]["paper_size"] == "a4"
+    assert edited_result["tables"][0]["row_allows_split"] == [True, False]
+    assert edited_result["tables"][2]["header_rows"] == 1
+    assert edited_result["headers"][0]["linked_to_previous"] is False
+
+    pdf = {"status": "skipped"}
+    if libreoffice:
+        pdf_path = root / "quality.pdf"
+        payload = run_cli(
+            tool,
+            "convert",
+            "--input",
+            str(edited),
+            "--format",
+            "pdf",
+            "--output",
+            str(pdf_path),
+            timeout=120,
+        )
+        report = payload["verification"]["content_quality_report"]
+        assert payload["verification"]["page_count"] >= 2
+        assert len(report["pages"]) >= 2
+        assert all("content_anchors" in page for page in report["pages"])
+        pdf = {"status": "passed", "pages": payload["verification"]["page_count"]}
+    return {"status": "passed", "pdf": pdf}
+
+
+def run_confirmed_defect_regressions(tool: Path, root: Path, image: Path) -> None:
+    """Cover ordering, shared stories, metadata, fields, widths, and section geometry."""
+
+    ordered_spec = root / "ordered-section.json"
+    ordered_docx = root / "ordered-section.docx"
+    write_json(
+        ordered_spec,
+        {
+            "schema_version": 1,
+            "content": {
+                "section": {
+                    "different_first_page": True,
+                    "page_number_start": 2,
+                },
+                "blocks": [],
+            },
+        },
+    )
+    run_cli(tool, "create", "--spec", str(ordered_spec), "--output", str(ordered_docx))
+    with zipfile.ZipFile(ordered_docx) as package:
+        root_xml = ElementTree.fromstring(package.read("word/document.xml"))
+    sect_pr = root_xml.find(
+        ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sectPr"
+    )
+    assert sect_pr is not None
+    child_names = [child.tag.rsplit("}", 1)[-1] for child in sect_pr]
+    assert child_names.index("pgNumType") < child_names.index("titlePg")
+
+    decorative_spec = root / "decorative.json"
+    decorative_docx = root / "decorative.docx"
+    write_json(
+        decorative_spec,
+        {
+            "schema_version": 1,
+            "content": {"blocks": [{"type": "image", "path": image.name, "decorative": True}]},
+        },
+    )
+    run_cli(tool, "create", "--spec", str(decorative_spec), "--output", str(decorative_docx))
+    with zipfile.ZipFile(decorative_docx) as package:
+        drawing_root = ElementTree.fromstring(package.read("word/document.xml"))
+    wp = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    a = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    a14 = "http://schemas.microsoft.com/office/drawing/2010/main"
+    doc_pr = drawing_root.find(f".//{{{wp}}}docPr")
+    assert doc_pr is not None
+    ext_list = doc_pr.find(f"{{{a}}}extLst")
+    assert ext_list is not None and len(ext_list) == 1
+    extension = ext_list[0]
+    assert extension.tag == f"{{{a}}}ext"
+    assert extension.get("uri") == "{C183D7F6-B498-43B3-948B-1728B52AA6E4}"
+    assert len(extension) == 1
+    assert extension[0].tag == f"{{{a14}}}decorative"
+    assert extension[0].get("val") == "1"
+    assert (
+        run_cli(tool, "inspect", "--input", str(decorative_docx))["result"]["images"][
+            "inline_occurrences"
+        ][0]["decorative"]
+        is True
+    )
+
+    insert_spec = root / "insert-image-metadata.json"
+    inserted_docx = root / "insert-image-metadata.docx"
+    write_json(
+        insert_spec,
+        {
+            "schema_version": 1,
+            "operations": [
+                {
+                    "type": "insert_image",
+                    "path": image.name,
+                    "alt_text": "Inserted smoke image",
+                    "title": "Inserted title",
+                }
+            ],
+        },
+    )
+    run_cli(
+        tool,
+        "edit",
+        "--input",
+        str(ordered_docx),
+        "--spec",
+        str(insert_spec),
+        "--output",
+        str(inserted_docx),
+    )
+    inserted = run_cli(tool, "inspect", "--input", str(inserted_docx))["result"]["images"][
+        "inline_occurrences"
+    ][0]
+    assert inserted["alt_text"] == "Inserted smoke image"
+    assert inserted["title"] == "Inserted title"
+    assert inserted["decorative"] is False
+
+    landscape_source = root / "landscape-source.docx"
+    landscape = Document()
+    section = landscape.sections[0]
+    section.orientation = WD_ORIENT.LANDSCAPE
+    section.page_width, section.page_height = Inches(11), Inches(8.5)
+    landscape.save(landscape_source)
+    landscape_spec = root / "landscape-paper.json"
+    landscape_output = root / "landscape-paper.docx"
+    write_json(
+        landscape_spec,
+        {
+            "schema_version": 1,
+            "operations": [{"type": "configure_section", "section_index": 0, "paper_size": "a4"}],
+        },
+    )
+    run_cli(
+        tool,
+        "edit",
+        "--input",
+        str(landscape_source),
+        "--spec",
+        str(landscape_spec),
+        "--output",
+        str(landscape_output),
+    )
+    landscape_record = run_cli(tool, "inspect", "--input", str(landscape_output))["result"][
+        "sections"
+    ][0]
+    assert landscape_record["orientation"] == "LANDSCAPE"
+    assert landscape_record["page_width_inches"] > landscape_record["page_height_inches"]
+
+    for orientation, expect_landscape in (("landscape", True), ("portrait", False)):
+        explicit_spec = root / f"landscape-paper-{orientation}.json"
+        explicit_output = root / f"landscape-paper-{orientation}.docx"
+        write_json(
+            explicit_spec,
+            {
+                "schema_version": 1,
+                "operations": [
+                    {
+                        "type": "configure_section",
+                        "section_index": 0,
+                        "paper_size": "letter",
+                        "orientation": orientation,
+                    }
+                ],
+            },
+        )
+        run_cli(
+            tool,
+            "edit",
+            "--input",
+            str(landscape_source),
+            "--spec",
+            str(explicit_spec),
+            "--output",
+            str(explicit_output),
+        )
+        explicit_record = run_cli(tool, "inspect", "--input", str(explicit_output))["result"][
+            "sections"
+        ][0]
+        assert (explicit_record["page_width_inches"] > explicit_record["page_height_inches"]) is (
+            expect_landscape
+        )
+        assert explicit_record["orientation"] == orientation.upper()
+
+    shared_source = root / "shared-header.docx"
+    shared = Document()
+    shared.sections[0].header.is_linked_to_previous = False
+    shared.sections[0].header.paragraphs[0].text = "Prior story survives"
+    shared.add_section(WD_SECTION.NEW_PAGE).header.is_linked_to_previous = True
+    shared.save(shared_source)
+    shared_spec = root / "shared-header-edit.json"
+    shared_output = root / "shared-header-output.docx"
+    write_json(
+        shared_spec,
+        {
+            "schema_version": 1,
+            "operations": [
+                {
+                    "type": "set_header",
+                    "section_index": 1,
+                    "link_to_previous": True,
+                    "blocks": [{"type": "paragraph", "text": "Must not overwrite"}],
+                }
+            ],
+        },
+    )
+    payload = run_cli(
+        tool,
+        "edit",
+        "--input",
+        str(shared_source),
+        "--spec",
+        str(shared_spec),
+        "--output",
+        str(shared_output),
+        expected_status=2,
+    )
+    assert payload["error"]["category"] == "bad_input"
+    assert not shared_output.exists()
+    reopened_shared = Document(str(shared_source))
+    assert reopened_shared.sections[0].header.paragraphs[0].text == "Prior story survives"
+    assert reopened_shared.sections[1].header.is_linked_to_previous is True
+
+    nested_docx = root / "nested-fields.docx"
+    nested = Document()
+    paragraph = nested.add_paragraph()
+
+    def field_char(kind: str) -> Any:
+        run = OxmlElement("w:r")
+        char = OxmlElement("w:fldChar")
+        char.set(qn("w:fldCharType"), kind)
+        run.append(char)
+        return run
+
+    def field_text(tag: str, text: str) -> Any:
+        run = OxmlElement("w:r")
+        node = OxmlElement(tag)
+        node.text = text
+        run.append(node)
+        return run
+
+    for node in (
+        field_char("begin"),
+        field_text("w:instrText", ' TOC \\o "1-3" '),
+        field_char("separate"),
+        field_text("w:t", "Entry "),
+        field_char("begin"),
+        field_text("w:instrText", " PAGEREF _Toc1 "),
+        field_char("separate"),
+        field_text("w:t", "7"),
+        field_char("end"),
+        field_text("w:t", " tail"),
+        field_char("end"),
+    ):
+        paragraph._p.append(node)
+    nested.save(nested_docx)
+    fields = run_cli(tool, "inspect", "--input", str(nested_docx))["result"]["fields"]
+    pageref = next(field for field in fields if field["type"] == "PAGEREF")
+    toc = next(field for field in fields if field["type"] == "TOC")
+    assert pageref["result"] == "7"
+    assert toc["result"] == "Entry 7 tail"
+
+    themed_docx = root / "theme-tokens.docx"
+    rewrite_theme_tokens(ordered_docx, themed_docx)
+    themed_fonts = run_cli(tool, "inspect", "--input", str(themed_docx))["result"]["fonts"]
+    assert {"majorHAnsi", "minorHAnsi"} <= set(themed_fonts["theme_tokens_referenced"])
+    assert {"Major Smoke", "Minor Smoke"} <= set(themed_fonts["referenced"])
+
+    merged_source = root / "merged-source.docx"
+    merged = Document()
+    table = merged.add_table(rows=1, cols=3)
+    table.cell(0, 0).merge(table.cell(0, 1))
+    merged.save(merged_source)
+    merged_spec = root / "merged-widths.json"
+    merged_output = root / "merged-widths.docx"
+    write_json(
+        merged_spec,
+        {
+            "schema_version": 1,
+            "operations": [
+                {
+                    "type": "update_table",
+                    "table_index": 0,
+                    "layout": "fixed",
+                    "column_widths_inches": [1, 2, 3],
+                }
+            ],
+        },
+    )
+    run_cli(
+        tool,
+        "edit",
+        "--input",
+        str(merged_source),
+        "--spec",
+        str(merged_spec),
+        "--output",
+        str(merged_output),
+    )
+    merged_reopened = Document(str(merged_output))
+    physical_cells = merged_reopened.tables[0].rows[0]._tr.tc_lst
+    assert int(physical_cells[0].tcPr.tcW.w) == 4320
+    assert int(physical_cells[1].tcPr.tcW.w) == 4320
+
+    section_image_spec = root / "section-image.json"
+    section_image_docx = root / "section-image.docx"
+    write_json(
+        section_image_spec,
+        {
+            "schema_version": 1,
+            "content": {
+                "blocks": [
+                    {
+                        "type": "image",
+                        "path": image.name,
+                        "width_inches": 7,
+                        "alt_text": "Too wide in first section",
+                    },
+                    {
+                        "type": "section_break",
+                        "orientation": "landscape",
+                        "left_margin_inches": 0.5,
+                        "right_margin_inches": 0.5,
+                    },
+                    {"type": "paragraph", "text": "Wide second section"},
+                ]
+            },
+        },
+    )
+    run_cli(tool, "create", "--spec", str(section_image_spec), "--output", str(section_image_docx))
+    section_image = run_cli(tool, "inspect", "--input", str(section_image_docx))
+    occurrence = section_image["result"]["images"]["inline_occurrences"][0]
+    assert occurrence["section_index"] == 0
+    warning_item = next(
+        item
+        for item in section_image["warnings"]
+        if item["code"] == "image_exceeds_printable_width"
+    )
+    assert warning_item["section_index"] == 0
+
+
 def run_schema_regressions(tool: Path, root: Path, source: Path) -> None:
     """Prove malformed and ambiguous JSON fails closed as bad_input."""
 
@@ -318,6 +1008,33 @@ def run_schema_regressions(tool: Path, root: Path, source: Path) -> None:
         {"blocks": [{"type": "paragraph", "text": 17}]},
         {"blocks": [{"type": "table", "rows": [["A", "B"], ["C"]]}]},
         {"blocks": [{"type": "table", "rows": [["A"], []]}]},
+        {
+            "blocks": [
+                {
+                    "type": "table",
+                    "rows": [["A", "B"]],
+                    "column_widths_inches": [2.0],
+                }
+            ]
+        },
+        {
+            "blocks": [
+                {
+                    "type": "table",
+                    "rows": [["A"]],
+                    "layout": "fluid",
+                }
+            ]
+        },
+        {
+            "blocks": [
+                {
+                    "type": "table",
+                    "rows": [["A"]],
+                    "allow_row_split": "false",
+                }
+            ]
+        },
         {"metadata": {"author": False}, "blocks": []},
         {
             "blocks": [
@@ -325,6 +1042,15 @@ def run_schema_regressions(tool: Path, root: Path, source: Path) -> None:
                     "type": "field",
                     "field": "page_number",
                     "instruction": " PAGE ",
+                }
+            ]
+        },
+        {
+            "blocks": [
+                {
+                    "type": "field",
+                    "field": "toc",
+                    "instruction": "TOC\nINJECTED",
                 }
             ]
         },
@@ -345,6 +1071,23 @@ def run_schema_regressions(tool: Path, root: Path, source: Path) -> None:
                     "style": "Smoke Missing Style",
                 }
             ]
+        },
+        {"section": {"page_width_inches": 0}, "blocks": []},
+        {
+            "section": {
+                "page_width_inches": 1,
+                "left_margin_inches": 0.5,
+                "right_margin_inches": 0.5,
+            },
+            "blocks": [],
+        },
+        {
+            "section": {
+                "page_height_inches": 1,
+                "top_margin_inches": 0.5,
+                "bottom_margin_inches": 0.5,
+            },
+            "blocks": [],
         },
     )
     for index, content in enumerate(invalid_create_contents):
@@ -709,6 +1452,34 @@ def run_fake_pdf_regressions(tool: Path, root: Path, source: Path) -> None:
     assert payload["verification"]["pdf_byte_limit"] == MAX_PDF_BYTES
     assert payload["verification"]["page_limit"] == MAX_PDF_PAGES
     assert payload["verification"]["text_pages_checked"] == 1
+    blank_page = payload["verification"]["content_quality_report"]["pages"][0]
+    assert blank_page["low_text"] is True
+    assert blank_page["has_nontext_content"] is False
+    assert blank_page["nearly_blank"] is True
+    assert payload["verification"]["content_quality_report"]["limitation"]
+
+    image_pdf = root / "image-only-fixture.pdf"
+    write_image_only_pdf(image_pdf)
+    image_output = root / "fake-image-only.pdf"
+    payload = run_cli(
+        tool,
+        "convert",
+        "--input",
+        str(source),
+        "--format",
+        "pdf",
+        "--output",
+        str(image_output),
+        environment={
+            **environment,
+            "DOCX_SMOKE_SOFFICE_MODE": "copy",
+            "DOCX_SMOKE_PDF_FIXTURE": str(image_pdf),
+        },
+    )
+    image_page = payload["verification"]["content_quality_report"]["pages"][0]
+    assert image_page["low_text"] is True
+    assert image_page["has_nontext_content"] is True
+    assert image_page["nearly_blank"] is False
 
     oversized_output = root / "fake-oversized.pdf"
     payload = run_cli(
@@ -871,6 +1642,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "type": "table",
                             "style": "Table Grid",
                             "header_rows": 1,
+                            "layout": "fixed",
+                            "column_widths_inches": [1.4, 4.6],
+                            "allow_row_split": False,
                             "rows": [["Key", "Value"], ["State", "Original"]],
                         },
                         {
@@ -927,6 +1701,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         inspect_payload = run_cli(tool, "inspect", "--input", str(created))
         assert_inspection(inspect_payload)
+        run_font_portability_regressions(tool, root, created)
+        run_confirmed_defect_regressions(tool, root, original_image)
 
         edit_spec = root / "edit.json"
         edited = root / "edited.docx"
@@ -1017,6 +1793,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         assert failure["error"]["category"] == "bad_input"
 
         soffice = shutil.which("soffice")
+        quality_result = run_quality_upgrade_regressions(
+            tool, root, original_image, libreoffice=bool(soffice)
+        )
         if soffice:
             pdf_result = run_pdf_check(tool, edited, root / "edited.pdf")
         elif args.require_libreoffice:
@@ -1051,6 +1830,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "checks": {
                         "create": "passed",
                         "inspect": "passed",
+                        "font_portability": "passed",
+                        "confirmed_defect_regressions": "passed",
                         "edit": "passed",
                         "reopen": "passed",
                         "formatting_policy": "first_run passed",
@@ -1062,6 +1843,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "external_relationships": "passed",
                         "custom_xml": "passed",
                         "bounded_pdf_and_process_cleanup": "passed",
+                        "quality_upgrade": quality_result,
                         "corrupt_input": "passed",
                         "pdf_conversion": pdf_result,
                     },
