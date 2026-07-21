@@ -556,6 +556,7 @@ def table_record(table: Table, index: int) -> dict[str, Any]:
     """Serialize a table and its cell paragraphs."""
 
     rows: list[list[dict[str, Any]]] = []
+    row_allows_split: list[bool] = []
     for row in table.rows:
         cells: list[dict[str, Any]] = []
         for cell in row.cells:
@@ -569,9 +570,17 @@ def table_record(table: Table, index: int) -> dict[str, Any]:
                 }
             )
         rows.append(cells)
+        tr_pr = row._tr.trPr
+        cant_split = tr_pr.find(qn("w:cantSplit")) if tr_pr is not None else None
+        cant_split_value = cant_split.get(qn("w:val")) if cant_split is not None else None
+        row_allows_split.append(cant_split is None or cant_split_value in {"0", "false", "off"})
+    autofit = table.autofit
     return {
         "index": index,
         "style": table.style.name if table.style is not None else None,
+        "layout": ("autofit" if autofit is True else "fixed" if autofit is False else "default"),
+        "column_widths_inches": [length_inches(column.width) for column in table.columns],
+        "row_allows_split": row_allows_split,
         "rows": rows,
         "row_count": len(table.rows),
         "column_count": max((len(row.cells) for row in table.rows), default=0),
@@ -692,6 +701,59 @@ def inspect_media(path: Path, document: DocumentObject) -> dict[str, Any]:
     return {"media_parts": media, "inline_occurrences": occurrences}
 
 
+def inspect_fonts(path: Path) -> dict[str, Any]:
+    """Inventory referenced fonts and fonts actually embedded in the DOCX package."""
+
+    referenced: set[str] = set()
+    embedded: set[str] = set()
+    run_fonts_tag = f"{{{WORD_NS}}}rFonts"
+    font_attributes = {
+        f"{{{WORD_NS}}}ascii",
+        f"{{{WORD_NS}}}hAnsi",
+        f"{{{WORD_NS}}}eastAsia",
+        f"{{{WORD_NS}}}cs",
+    }
+    embedding_tags = {
+        f"{{{WORD_NS}}}embedRegular",
+        f"{{{WORD_NS}}}embedBold",
+        f"{{{WORD_NS}}}embedItalic",
+        f"{{{WORD_NS}}}embedBoldItalic",
+    }
+
+    with zipfile.ZipFile(path) as package:
+        names = set(package.namelist())
+        for name in names:
+            if not name.startswith("word/") or not name.lower().endswith(".xml"):
+                continue
+            root = parse_xml_safely(package.read(name), name)
+            if name != "word/fontTable.xml":
+                for element in root.iter(run_fonts_tag):
+                    for attribute in font_attributes:
+                        value = (element.get(attribute) or "").strip()
+                        if value and not value.startswith("+"):
+                            referenced.add(value)
+                if name.startswith("word/theme/"):
+                    for element in root.iter():
+                        value = (element.get("typeface") or "").strip()
+                        if value and not value.startswith("+"):
+                            referenced.add(value)
+
+        font_table = "word/fontTable.xml"
+        embedded_parts_present = any(name.startswith("word/fonts/") for name in names)
+        if font_table in names and embedded_parts_present:
+            root = parse_xml_safely(package.read(font_table), font_table)
+            for font in root.findall(f".//{{{WORD_NS}}}font"):
+                font_name = (font.get(f"{{{WORD_NS}}}name") or "").strip()
+                if font_name and any(child.tag in embedding_tags for child in font):
+                    embedded.add(font_name)
+
+    return {
+        "referenced": sorted(referenced, key=str.casefold),
+        "embedded": sorted(embedded, key=str.casefold),
+        "unembedded": sorted(referenced - embedded, key=str.casefold),
+    }
+
+
 def scan_features(path: Path) -> tuple[dict[str, int], list[str]]:
     """Count fields and fidelity-sensitive constructs in package XML."""
 
@@ -780,6 +842,7 @@ def inspect_document(
         )
 
     feature_counts, unsupported_parts = scan_features(preflight.path)
+    fonts = inspect_fonts(preflight.path)
     warnings = list(preflight.warnings)
     warning_specs = (
         ("fields", "fields_present", "Fields require a layout application to update."),
@@ -815,6 +878,37 @@ def inspect_document(
                 parts=unsupported_parts,
             )
         )
+    if fonts["unembedded"]:
+        warnings.append(
+            warning(
+                "unembedded_fonts",
+                (
+                    "DOCX references fonts that are not embedded in the package. PDF font "
+                    "embedding does not make the DOCX portable; another Word renderer may "
+                    "substitute fonts and change wrapping, page breaks, object flow, and TOC "
+                    "page references. Use conservative cross-renderer fonts or embed licensed "
+                    "fonts, and do not claim DOCX/PDF pagination fidelity from a PDF-only check."
+                ),
+                fonts=fonts["unembedded"],
+            )
+        )
+        portable_fonts = {"arial", "times new roman", "courier new"}
+        nonportable_fonts = [
+            font for font in fonts["unembedded"] if font.casefold() not in portable_fonts
+        ]
+        if nonportable_fonts:
+            warnings.append(
+                warning(
+                    "nonportable_unembedded_fonts",
+                    (
+                        "RELEASE BLOCKER: DOCX references unembedded fonts outside the "
+                        "conservative cross-renderer set (Arial, Times New Roman, Courier "
+                        "New). Replace these fonts before releasing matching DOCX and PDF "
+                        "deliverables; renderer substitution can change wrapping and pagination."
+                    ),
+                    fonts=nonportable_fonts,
+                )
+            )
 
     result = {
         "ordered_blocks": ordered,
@@ -827,6 +921,7 @@ def inspect_document(
         "footers": footers,
         "metadata": core_properties_record(document),
         "images": inspect_media(preflight.path, document),
+        "fonts": fonts,
         "features": feature_counts,
         "unsupported_parts": unsupported_parts,
         "package": {
@@ -1203,6 +1298,40 @@ def validate_table_block(block: dict[str, Any], field: str) -> None:
             minimum=0,
             maximum=len(rows),
         )
+    if "layout" in block:
+        layout = string_value(block["layout"], f"{field}.layout")
+        if layout not in {"autofit", "fixed"}:
+            raise ToolError(
+                "bad_input",
+                f"{field}.layout must be 'autofit' or 'fixed'.",
+            )
+    if "column_widths_inches" in block:
+        widths = block["column_widths_inches"]
+        if not isinstance(widths, list):
+            raise ToolError(
+                "bad_input",
+                f"{field}.column_widths_inches must be an array.",
+            )
+        if width is None or len(widths) != width:
+            raise ToolError(
+                "bad_input",
+                f"{field}.column_widths_inches must contain one width per column.",
+                details={
+                    "expected_columns": width,
+                    "actual_widths": len(widths),
+                },
+            )
+        for column_index, value in enumerate(widths):
+            required_number(
+                value,
+                f"{field}.column_widths_inches[{column_index}]",
+                minimum=0.1,
+            )
+    if "allow_row_split" in block:
+        optional_boolean(
+            block["allow_row_split"],
+            f"{field}.allow_row_split",
+        )
 
 
 def validate_block(block: Any, field: str, *, allow_sections: bool) -> None:
@@ -1305,7 +1434,19 @@ def validate_block(block: Any, field: str, *, allow_sections: bool) -> None:
             validate_text_and_runs(item, item_field)
         return
     if block_type == "table":
-        allow_keys(block, {"type", "rows", "style", "header_rows"}, field)
+        allow_keys(
+            block,
+            {
+                "type",
+                "rows",
+                "style",
+                "header_rows",
+                "layout",
+                "column_widths_inches",
+                "allow_row_split",
+            },
+            field,
+        )
         validate_table_block(block, field)
         return
     if block_type == "section_break":
@@ -1809,12 +1950,37 @@ def fill_table(table: Table, block: dict[str, Any]) -> None:
             required_string(block["style"], "table.style"),
             "table.style",
         )
+    layout = block.get(
+        "layout",
+        "fixed" if "column_widths_inches" in block else "autofit",
+    )
+    table.autofit = layout == "autofit"
+    if "column_widths_inches" in block:
+        widths = [
+            Inches(required_number(value, "column_width", minimum=0.1))
+            for value in block["column_widths_inches"]
+        ]
+        for column, width in zip(table.columns, widths, strict=True):
+            column.width = width
+        for row in table.rows:
+            for cell, width in zip(row.cells, widths, strict=True):
+                cell.width = width
     header_rows = required_integer(block.get("header_rows", 0), "header_rows", minimum=0)
     for row in table.rows[:header_rows]:
         tr_pr = row._tr.get_or_add_trPr()
         repeat = OxmlElement("w:tblHeader")
         repeat.set(qn("w:val"), "true")
         tr_pr.append(repeat)
+    if not optional_boolean(
+        block.get("allow_row_split"),
+        "allow_row_split",
+        default=True,
+    ):
+        for row in table.rows:
+            tr_pr = row._tr.get_or_add_trPr()
+            cant_split = OxmlElement("w:cantSplit")
+            cant_split.set(qn("w:val"), "true")
+            tr_pr.append(cant_split)
 
 
 def set_cell_value(cell: _Cell, value: Any) -> None:

@@ -9,6 +9,7 @@
 - [External-relationship opt-in](#external-relationship-opt-in)
 - [Corrupt input](#corrupt-input)
 - [Optional PDF conversion](#optional-pdf-conversion)
+- [DOCX and PDF release example](#docx-and-pdf-release-example)
 
 All paths in JSON are relative to the JSON file. Before using these examples, follow
 [environment setup](references/operations.md#environment) to set absolute `SKILL_ROOT` and
@@ -45,6 +46,9 @@ Create `/tmp/docx-demo/create.json`:
         "type": "table",
         "style": "Table Grid",
         "header_rows": 1,
+        "layout": "fixed",
+        "column_widths_inches": [1.5, 4.5],
+        "allow_row_split": false,
         "rows": [
           ["Owner", "State"],
           ["Documentation", "Draft"]
@@ -124,6 +128,9 @@ cat >"/tmp/docx-demo/create.json" <<'JSON'
         "type": "table",
         "style": "Table Grid",
         "header_rows": 1,
+        "layout": "fixed",
+        "column_widths_inches": [1.5, 4.5],
+        "allow_row_split": false,
         "rows": [["Owner", "State"], ["Documentation", "Draft"]]
       }
     ],
@@ -288,6 +295,23 @@ Create a document with a TOC field:
 The TOC is field markup with a placeholder. Open the file in a layout application and update
 the field before judging entries or pagination.
 
+## DOCX and PDF release example
+
+For a matching DOCX/PDF release, apply one portability contract:
+
+- Set headings and sans body to Arial, serif body to Times New Roman, and code/logs to Courier
+  New; use only these fonts for chart labels too. Replace Avenir, Calibri, Cambria, Georgia,
+  Trebuchet, Palatino, and every other unembedded custom/system font. Inspection must contain
+  no `nonportable_unembedded_fonts` warning.
+- Set every table to `"layout": "fixed"` with explicit `column_widths_inches`; reserve at
+  least 0.9 inches for a short-label column. Use landscape orientation or fewer columns for
+  prose tables. Do not use character-level word breaking.
+- Do not force a new page for each section.
+- Populate the contents list visibly in both outputs. A static list may cite page references
+  from the final PDF, but say that they are final-PDF references and do not claim DOCX
+  pagination fidelity.
+- Reinspect the final DOCX, convert it, and review every DOCX and PDF page before release.
+
 ## Explicit paragraph append
 
 Paragraph insertion never infers append from a missing index. Use `position: "append"`
@@ -390,3 +414,16 @@ PDF conversion is layout-engine dependent. The tool rejects generated PDFs over 
 1,000 pages and limits text validation to the first 50 pages and 1,000,000 characters.
 Validate content anchors within those bounds and visually render the actual document; bounded
 structural validation does not prove layout correctness.
+
+Before conversion, inspect font portability:
+
+```bash
+"$DOCX_PYTHON" "$SKILL_ROOT/scripts/docx_tool.py" inspect \
+  --input "/tmp/docx-demo/approved.docx"
+```
+
+Review `result.fonts.referenced`, `result.fonts.embedded`, and
+`result.fonts.unembedded`. Do not leave an `unembedded_fonts` warning unreviewed for a
+DOCX+PDF fidelity task: choose conservative cross-renderer fonts or genuinely embed fonts
+whose licenses permit embedding. A correct PDF rendering and clean `pdffonts` output do not
+prove DOCX font portability or matching pagination.

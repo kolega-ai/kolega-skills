@@ -9,6 +9,7 @@
 - [Create](#create)
 - [Edit](#edit)
 - [Convert](#convert)
+- [DOCX and PDF release gate](#docx-and-pdf-release-gate)
 - [Content blocks](#content-blocks)
 - [Headers and footers](#headers-and-footers)
 - [Replacement policy](#replacement-policy)
@@ -286,6 +287,26 @@ Conversion is best-effort. LibreOffice layout can differ from Word layout.
 The isolated profile and process group are lifecycle/configuration controls, not a network
 sandbox.
 
+### Font portability and pagination
+
+The `inspect` result includes `result.fonts.referenced`, `result.fonts.embedded`, and
+`result.fonts.unembedded`. It also emits an `unembedded_fonts` warning when a referenced font
+is not actually packaged in `word/fonts/` with a matching font-table embedding declaration.
+The additional prominent `nonportable_unembedded_fonts` warning identifies unembedded
+references outside Arial, Times New Roman, and Courier New. Treat it as a release blocker.
+
+Fonts embedded in a PDF are not thereby embedded in its source DOCX. Tools such as `pdffonts`
+describe only the PDF. A custom unembedded DOCX font can be substituted by another Word
+renderer, changing line and table wrapping, page breaks, object flow, and TOC page references
+even when the LibreOffice PDF looks correct. For a task delivering both formats, use
+conservative fonts available across the expected renderers unless the font license permits
+and the package inspection confirms genuine DOCX embedding.
+
+Do not use page numbers measured only from the generated PDF to construct a static DOCX
+contents list. Prefer live Word fields when pagination must remain editable. If an independent
+DOCX renderer is unavailable, report the fidelity uncertainty and avoid claiming that a
+PDF-only page-count check validates DOCX pagination.
+
 A complete conversion job is:
 
 ```json
@@ -300,6 +321,24 @@ A complete conversion job is:
   "allow_external_relationships": false
 }
 ```
+
+## DOCX and PDF release gate
+
+Before releasing matching DOCX and PDF deliverables:
+
+1. Use Arial only for headings and sans-serif body, Times New Roman only for serif body, and
+   Courier New only for code and logs. Apply the same rule to chart labels. Do not use Avenir,
+   Calibri, Cambria, Georgia, Trebuchet, Palatino, or any other unembedded custom/system font.
+   Replace all `nonportable_unembedded_fonts` findings before release.
+2. Turn table autofit off and assign fixed column widths. Give each short-label column at least
+   0.9 inches. For prose tables, reduce the column count or use landscape orientation rather
+   than squeezing text. Do not enable character-level word breaking.
+3. Let sections flow naturally; do not force a new page for every section.
+4. Require a visibly populated contents list in both files. A static list is acceptable when
+   its page references come from the final PDF, but identify those as final-PDF references and
+   do not claim DOCX pagination or fidelity.
+5. Inspect the final DOCX, render the final PDF, and review both page by page. PDF font
+   embedding does not satisfy DOCX portability.
 
 ## Content blocks
 
@@ -319,7 +358,7 @@ stories.
       "bold": true,
       "italic": false,
       "underline": false,
-      "font": "Aptos",
+      "font": "Arial",
       "size_pt": 11,
       "color": "B42318",
       "style": "Emphasis"
@@ -380,6 +419,9 @@ Section breaks are main-body only.
   "type": "table",
   "style": "Table Grid",
   "header_rows": 1,
+  "layout": "fixed",
+  "column_widths_inches": [1.4, 4.6],
+  "allow_row_split": false,
   "rows": [
     ["Item", "Status"],
     [{"runs": [{"text": "A", "bold": true}]}, "Ready"]
@@ -391,6 +433,14 @@ Section breaks are main-body only.
 of cells. A cell accepts a JSON string or a paragraph-style object with `text`/`runs`, `style`,
 and `alignment`. Empty rows, ragged rows, numbers, Booleans, objects outside that schema, and
 other value types fail as `bad_input`.
+
+`layout` is `autofit` or `fixed`; it defaults to `fixed` when
+`column_widths_inches` is present and to `autofit` otherwise. Widths must contain one positive
+inch value per column. Use deliberate proportional widths for narrative tables instead of
+letting unlike columns collapse into an equal grid. Set `allow_row_split` to `false` for
+compact rows that must not fragment across pages; leave it `true` for any row that could grow
+taller than a page. `inspect` reports effective layout, column widths, and per-row split
+behavior.
 
 ### Inline image
 

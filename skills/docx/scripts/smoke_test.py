@@ -150,6 +150,50 @@ def add_custom_xml_part(source: Path, destination: Path) -> None:
         target_zip.writestr("customXml/smoke-extra.xml", b"<smoke>extra</smoke>")
 
 
+def rewrite_font_references(
+    source: Path, destination: Path, font_name: str, *, add_decoys: bool = False
+) -> None:
+    """Rewrite real font references and optionally add misleading non-font attributes."""
+
+    word_namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    font_attributes = tuple(
+        f"{{{word_namespace}}}{name}" for name in ("ascii", "hAnsi", "eastAsia", "cs")
+    )
+    with (
+        zipfile.ZipFile(source) as source_zip,
+        zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as target_zip,
+    ):
+        for info in source_zip.infolist():
+            data = source_zip.read(info)
+            if info.filename.startswith("word/") and info.filename.endswith(".xml"):
+                root = ElementTree.fromstring(data)
+                for element in root.iter(f"{{{word_namespace}}}rFonts"):
+                    for attribute in font_attributes:
+                        if element.get(attribute) is not None:
+                            element.set(attribute, font_name)
+                if info.filename.startswith("word/theme/"):
+                    for element in root.iter():
+                        if element.get("typeface") is not None:
+                            element.set("typeface", font_name)
+                if add_decoys and info.filename == "word/settings.xml":
+                    ElementTree.SubElement(
+                        root,
+                        f"{{{word_namespace}}}lang",
+                        {f"{{{word_namespace}}}eastAsia": "ja-JP"},
+                    )
+                    ElementTree.SubElement(
+                        root,
+                        f"{{{word_namespace}}}decimalSymbol",
+                        {
+                            f"{{{word_namespace}}}val": ".",
+                            f"{{{word_namespace}}}ascii": ".",
+                            f"{{{word_namespace}}}hAnsi": ",",
+                        },
+                    )
+                data = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            target_zip.writestr(info, data)
+
+
 def write_pdf(path: Path, pages: int) -> None:
     """Write a deterministic blank PDF fixture."""
 
@@ -244,7 +288,11 @@ def assert_docx_structure(path: Path, replacement_image: Path) -> None:
     assert styled.runs[1].text == "ta"
     assert styled.runs[1].italic is True
     assert any(paragraph.text == "Done Done" for paragraph in document.paragraphs)
-    assert document.tables[0].cell(1, 1).text == "Updated"
+    table = document.tables[0]
+    assert table.cell(1, 1).text == "Updated"
+    assert table.autofit is False
+    assert [round(column.width.inches, 2) for column in table.columns] == [1.4, 4.6]
+    assert all(row._tr.get_or_add_trPr().find(qn("w:cantSplit")) is not None for row in table.rows)
     assert len(document.inline_shapes) == 1
     expected_hash = hashlib.sha256(replacement_image.read_bytes()).hexdigest()
     assert inline_image_sha256(document, 0) == expected_hash
@@ -266,12 +314,51 @@ def assert_inspection(payload: dict[str, Any]) -> None:
     assert payload["counts"]["tables"] == 1
     assert payload["counts"]["inline_images"] == 1
     assert payload["counts"]["fields"] >= 1
+    fonts = payload["result"]["fonts"]
+    assert fonts["referenced"]
+    assert set(fonts["unembedded"]) == set(fonts["referenced"])
+    assert fonts["embedded"] == []
+    font_warning = next(item for item in payload["warnings"] if item["code"] == "unembedded_fonts")
+    assert set(font_warning["fonts"]) == set(fonts["unembedded"])
+    assert "PDF font embedding does not make the DOCX portable" in font_warning["message"]
     assert any(item["heading_level"] == 1 for item in payload["result"]["paragraphs"])
+    table = payload["result"]["tables"][0]
+    assert table["layout"] == "fixed"
+    assert table["column_widths_inches"] == [1.4, 4.6]
+    assert table["row_allows_split"] == [False, False]
     assert any(
         story["paragraphs"][0]["text"] == "Smoke header"
         for story in payload["result"]["headers"]
         if story["paragraphs"]
     )
+
+
+def run_font_portability_regressions(tool: Path, root: Path, source: Path) -> None:
+    """Exclude non-font attributes and distinguish allowed from custom fonts."""
+
+    for index, font_name in enumerate(("aRiAl", "Times New Roman", "Courier New")):
+        allowed = root / f"allowed-font-{index}.docx"
+        rewrite_font_references(source, allowed, font_name, add_decoys=index == 0)
+        payload = run_cli(tool, "inspect", "--input", str(allowed))
+        fonts = payload["result"]["fonts"]
+        assert fonts["referenced"] == [font_name]
+        assert "ja-JP" not in fonts["referenced"]
+        assert "." not in fonts["referenced"]
+        assert "," not in fonts["referenced"]
+        assert not any(
+            item["code"] == "nonportable_unembedded_fonts" for item in payload["warnings"]
+        )
+
+    custom = root / "custom-font.docx"
+    rewrite_font_references(source, custom, "Avenir")
+    payload = run_cli(tool, "inspect", "--input", str(custom))
+    assert payload["result"]["fonts"]["referenced"] == ["Avenir"]
+    blocker = next(
+        item for item in payload["warnings"] if item["code"] == "nonportable_unembedded_fonts"
+    )
+    assert blocker["fonts"] == ["Avenir"]
+    assert blocker["message"].startswith("RELEASE BLOCKER:")
+    assert any(item["code"] == "unembedded_fonts" for item in payload["warnings"])
 
 
 def run_pdf_check(tool: Path, source: Path, output: Path) -> dict[str, Any]:
@@ -318,6 +405,33 @@ def run_schema_regressions(tool: Path, root: Path, source: Path) -> None:
         {"blocks": [{"type": "paragraph", "text": 17}]},
         {"blocks": [{"type": "table", "rows": [["A", "B"], ["C"]]}]},
         {"blocks": [{"type": "table", "rows": [["A"], []]}]},
+        {
+            "blocks": [
+                {
+                    "type": "table",
+                    "rows": [["A", "B"]],
+                    "column_widths_inches": [2.0],
+                }
+            ]
+        },
+        {
+            "blocks": [
+                {
+                    "type": "table",
+                    "rows": [["A"]],
+                    "layout": "fluid",
+                }
+            ]
+        },
+        {
+            "blocks": [
+                {
+                    "type": "table",
+                    "rows": [["A"]],
+                    "allow_row_split": "false",
+                }
+            ]
+        },
         {"metadata": {"author": False}, "blocks": []},
         {
             "blocks": [
@@ -871,6 +985,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "type": "table",
                             "style": "Table Grid",
                             "header_rows": 1,
+                            "layout": "fixed",
+                            "column_widths_inches": [1.4, 4.6],
+                            "allow_row_split": False,
                             "rows": [["Key", "Value"], ["State", "Original"]],
                         },
                         {
@@ -927,6 +1044,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         inspect_payload = run_cli(tool, "inspect", "--input", str(created))
         assert_inspection(inspect_payload)
+        run_font_portability_regressions(tool, root, created)
 
         edit_spec = root / "edit.json"
         edited = root / "edited.docx"
@@ -1051,6 +1169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "checks": {
                         "create": "passed",
                         "inspect": "passed",
+                        "font_portability": "passed",
                         "edit": "passed",
                         "reopen": "passed",
                         "formatting_policy": "first_run passed",

@@ -13,6 +13,13 @@ metadata:
 Use the bundled deterministic CLI for WordprocessingML work. Treat every source document as
 untrusted and immutable unless the user explicitly authorizes overwrite.
 
+## Workspace discipline
+
+Work directly in visible workspace paths. Never create or use `.build` or another hidden
+build/work directory. Write requested deliverables directly to their declared destinations;
+if intermediate files are necessary, keep them in visible, narrowly scoped paths rather than
+staging the task in a hidden subtree.
+
 ## Route the task
 
 - Use this skill for creating, reading, inspecting, editing, or converting `.docx` files.
@@ -35,9 +42,22 @@ Use the selected interpreter's `-m pip` for the declared requirements. Use the p
    headers, footers, fields, drawings, comments, revisions, unsupported parts, and warnings.
 4. Prefer named styles and template inheritance over direct formatting. Use the public CLI
    instead of ad hoc package mutation.
+   For tables, turn autofit off and set fixed widths. Leave at least 0.9 inches for short-label
+   columns; use landscape orientation or fewer columns for prose tables. Never enable
+   character-level word breaking. Disable row splitting only for compact rows; a row taller
+   than the page must remain splittable.
 5. Write to a distinct destination. Use `--overwrite` only after explicit authorization.
 6. Reinspect the output and verify structure, expected text, styles, tables, images, stories,
-   and fields. Optionally render with LibreOffice to review pagination and layout.
+   fields, and the font inventory. For DOCX+PDF deliverables, rendering and page-by-page layout
+   review are mandatory. Apply this release gate: use only Arial for headings and sans body,
+   Times New Roman for serif body, and Courier New for code or logs, including chart labels.
+   Do not use Avenir, Calibri, Cambria, Georgia, Trebuchet, Palatino, or any other unembedded
+   custom/system font; replace every `nonportable_unembedded_fonts` finding before release.
+   PDF font embedding is not DOCX font embedding. A clean LibreOffice PDF alone does not prove
+   that Word will preserve wrapping or pagination.
+   Do not force every section onto a new page. Both deliverables must show a visibly populated
+   contents list. A static list may use final-PDF page references, but label it accordingly and
+   make no DOCX-pagination or DOCX-fidelity claim.
 7. Report warnings and preservation uncertainty. Never promise perfect round-trip fidelity.
 
 ## Safety rules
@@ -58,6 +78,10 @@ Use the selected interpreter's `-m pip` for the declared requirements. Use the p
   field markup, block placement, and image relationship replacement.
 - Remember that page-number and TOC fields are markup only. Pagination and TOC refresh require
   a layout application.
+- Never derive static TOC page numbers solely from the generated PDF when the editable DOCX is
+  also a paginated deliverable. If no independent DOCX renderer is available, prefer live fields
+  and avoid claiming identical pagination; do not convert PDF page checks into DOCX fidelity
+  claims.
 - Keep PDF conversion within the generated-PDF byte/page/text-extraction and decompressed-stream
   bounds. LibreOffice runs with an isolated profile and process group so timeout cleanup
   reaches ordinary descendants; those lifecycle controls are not a network sandbox.
@@ -76,5 +100,10 @@ Use the selected interpreter's `-m pip` for the declared requirements. Use the p
 ## Final verification
 
 Confirm that the source remains unchanged unless overwrite was authorized, the destination
-reopens, requested structures are present, warnings were reviewed, and no temporary files or
-generated fixtures remain in the skill directory.
+reopens, requested structures are present, every `unembedded_fonts` warning was resolved or
+explicitly reviewed, and no temporary files or generated fixtures remain in the skill directory.
+For matching DOCX/PDF deliverables, treat `nonportable_unembedded_fonts` as a release blocker;
+confirm the typography, fixed table widths, natural section flow, and populated contents list
+in both files before trusting page counts, table wrapping, object flow, or TOC references.
+`pdffonts` can inspect only the PDF and must never be cited as evidence that the DOCX embeds or
+preserves those fonts.
