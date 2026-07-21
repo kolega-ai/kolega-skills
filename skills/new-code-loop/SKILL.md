@@ -37,46 +37,17 @@ Define specific, verifiable success criteria before any code is written.
 
 ## Phase 1 — GENERATE
 
-Create 2–3 independent candidate implementations, each in **isolated workspaces**.
+Create 2–3 independent candidate implementations, each in **an isolated workspace**.
 
 **Branch naming convention:** All candidate branches follow the pattern:
-`feature/<name>-attempt<A>-candidate<M>` where `<A>` is the attempt number (starting at 1,
-incremented on each full retry) and `<M>` is the candidate index (1..N). This prevents
-collisions when retrying after failed attempts.
+`feature/<name>-attempt<A>-candidate<M>`
+where `<A>` is the attempt number (starting at 1, incremented on each full retry) and
+`<M>` is the candidate index (1..N). This prevents collisions when retrying after failed
+attempts.
 
-### With Gigacode (preferred)
+### Preflight — verify clean working tree
 
-When `run_workflow` is available, dispatch parallel coder sub-agents via
-`agent(agent_type="coder")` in a workflow pipeline. **Each agent MUST work in an isolated
-directory** — coder agents share one working tree, so parallel implementations of the same
-feature will overwrite each other.
-
-**If the project is a Git repository:**
-Create a separate worktree per candidate from the current HEAD:
-```bash
-git worktree add ../feature-<name>-attempt<A>-candidate-M feature/<name>-base
-```
-Each agent works inside its own worktree directory.
-
-**If the project is not a Git repository:**
-Copy the entire working directory into a dedicated folder per candidate:
-```bash
-cp -r . ../candidate-M
-```
-Each agent operates in its corresponding copy.
-
-Give each coder agent:
-- The same CONTRACT.md.
-- A unique candidate identifier (candidate-1, candidate-2, candidate-3).
-- Its isolated workspace path.
-- Instructions to implement the full feature in a single self-contained pass.
-
-### Without Gigacode
-
-Generate candidates sequentially using safe branch isolation.
-
-**Preflight — verify clean working tree:**
-Before creating any branches, check for uncommitted changes:
+Before creating any workspaces or branches, check for uncommitted changes:
 ```bash
 if [ -n "$(git status --porcelain)" ]; then
     echo "ERROR: Working tree is dirty. Commit or stash changes first."
@@ -84,15 +55,54 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 ```
 If the tree is dirty, stop and ask the user to commit or stash. Do not proceed with
-uncommitted changes — they would carry onto candidate branches and could be lost.
+uncommitted changes — they would carry onto candidate workspaces and could be lost.
 
-1. Record the starting branch: `git branch --show-current` and save it as ORIGINAL_BRANCH.
-2. For each candidate M (1, 2, 3):
-   a. Create a dedicated branch: `git checkout -b feature/<name>-attempt<A>-candidate-<M>`
-   b. Implement the full feature on that branch.
-   c. Commit the implementation.
-   d. Switch back to ORIGINAL_BRANCH before creating the next branch:
-      `git checkout <ORIGINAL_BRANCH>`
+Identify the starting branch and its HEAD commit:
+```bash
+ORIGINAL_BRANCH=$(git branch --show-current)
+BASE_COMMIT=$(git rev-parse HEAD)
+```
+
+### With Gigacode (preferred)
+
+When `run_workflow` is available, dispatch parallel coder sub-agents via
+`agent(agent_type="coder")` in a workflow pipeline. **Each agent MUST work in an isolated
+directory** — coder agents share one working tree, so parallel implementations of the same
+feature will overwrite each other. Never run competing implementations concurrently in the
+same working directory.
+
+For each candidate M (1, 2, 3), create an isolated Git worktree from the base commit:
+```bash
+git worktree add ../feature-<name>-attempt<A>-candidate-M "$BASE_COMMIT"
+```
+Each agent works inside its own `../feature-<name>-attempt<A>-candidate-M` directory.
+
+If the project is not a Git repository, copy the entire working directory instead:
+```bash
+cp -r . ../candidate-M
+```
+
+Give each coder agent:
+- The same CONTRACT.md.
+- A unique candidate identifier (candidate-1, candidate-2, candidate-3).
+- Its isolated workspace path.
+- Instructions to implement the full feature in a single self-contained pass.
+
+After all agents complete, produce a diff from each workspace (against the base commit).
+The diffs are the candidate implementations. The workspaces themselves are read-only
+after generation — do not merge from them directly.
+
+### Without Gigacode
+
+Generate candidates sequentially using branches on the main working tree.
+
+For each candidate M (1, 2, 3):
+1. Create a dedicated branch from the base commit:
+   `git checkout -b feature/<name>-attempt<A>-candidate-<M> "$BASE_COMMIT"`
+2. Implement the full feature on that branch.
+3. Commit the implementation.
+4. Switch back to the original branch:
+   `git checkout "$ORIGINAL_BRANCH"`
 
 **Safety rules:**
 - Never use `git reset --hard` on ORIGINAL_BRANCH.
@@ -104,7 +114,7 @@ uncommitted changes — they would carry onto candidate branches and could be lo
 Grade each candidate against the CONTRACT.md independently.
 
 Dispatch investigation sub-agents (one per candidate) with:
-- The candidate's branch name or diff.
+- The candidate's diff or branch name.
 - The full CONTRACT.md.
 - Instructions to check: correctness, completeness, performance, style consistency, test
   coverage, edge case handling, and integration compliance.
@@ -124,30 +134,40 @@ Merge the grades into a comparison matrix. Present it to the user.
 ## Phase 3 — SELECT
 
 1. Identify the best candidate (highest verified score among those that pass).
-2. **Preserve all branches.** Do not delete anything until verification passes.
-3. If using branch isolation:
-   a. Switch to the winning branch: `git checkout feature/<name>-attempt<A>-candidate-<W>`
-   b. **Run the full test suite first**, before merging or deleting anything.
-   c. **On test success:**
-      - Switch to ORIGINAL_BRANCH: `git checkout <ORIGINAL_BRANCH>`
-      - Merge the winner: `git merge feature/<name>-attempt<A>-candidate-<W>`
-      - Delete losing branches by exact name:
-        `git branch -D feature/<name>-attempt<A>-candidate-<X>`
-      - Delete the winning branch: `git branch -D feature/<name>-attempt<A>-candidate-<W>`
-      - Clean up worktrees: `git worktree remove ../feature-<name>-attempt<A>-candidate-*`
-   d. **On test failure:**
-      - The winner failed. Do NOT delete any branches — losing candidates may still be
-        viable fallbacks.
-      - Try the next-highest-ranked candidate: return to step 3b with candidate-W+1.
-      - If no remaining candidate passes, proceed to step 5 (retry).
-4. Maximum 3 generation attempts. If all candidates fail verification:
+2. **Preserve all branches and worktrees.** Do not delete anything until verification
+   passes.
+3. Check out the winning candidate's workspace (its worktree or branch) and **run the
+   full test suite first**, before merging or deleting anything.
+4. **On test success:**
+   a. Switch back to the original branch:
+      `git checkout "$ORIGINAL_BRANCH"`
+   b. Merge the winner into the original branch:
+      `git merge feature/<name>-attempt<A>-candidate-<W>`
+   c. Delete the losing candidate branches by exact name (one at a time):
+      `git branch -D feature/<name>-attempt<A>-candidate-<X>`
+   d. Delete the winning branch:
+      `git branch -D feature/<name>-attempt<A>-candidate-<W>`
+   e. Remove losing candidate worktrees (one at a time, exact path):
+      `git worktree remove ../feature-<name>-attempt<A>-candidate-<X>`
+   f. Remove the winning worktree:
+      `git worktree remove ../feature-<name>-attempt<A>-candidate-<W>`
+5. **On test failure:**
+   - The winner failed. Do NOT delete any branches or worktrees — losing candidates may
+     still be viable fallbacks.
+   - Try the next-highest-ranked candidate: return to step 3 with candidate-W+1.
+   - If no remaining candidate passes, proceed to step 6 (retry).
+6. Maximum 3 generation attempts. If all candidates fail verification:
    a. Analyze what was common across failures.
    b. Update CONTRACT.md with refined criteria.
-   c. **Clean up failed attempt branches** by exact name before retrying:
-      `git branch -D feature/<name>-attempt<A>-candidate-1` (repeat for each).
-   d. Increment attempt counter (A = A + 1).
-   e. Return to Phase 1 with the updated contract and new attempt number.
-5. On the third failure, report findings and ask the user for direction.
+   c. **Clean up every failed attempt branch by exact name** before retrying:
+      `git branch -D feature/<name>-attempt<A>-candidate-1`
+      (repeat for candidate-2, candidate-3)
+   d. **Clean up every failed attempt worktree by exact path:**
+      `git worktree remove ../feature-<name>-attempt<A>-candidate-1`
+      (repeat for candidate-2, candidate-3)
+   e. Increment attempt counter (A = A + 1).
+   f. Return to Phase 1 with the updated contract and new attempt number.
+7. On the third failure, report findings and ask the user for direction.
 
 ## Phase 4 — REPORT
 
