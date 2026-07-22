@@ -12,7 +12,7 @@ and adds repository-level validation, deterministic packaging, tests, and CI.
 | Skill | Use it for |
 | --- | --- |
 | [`docx`](skills/docx/SKILL.md) | Creating, inspecting, editing, and converting Microsoft Word `.docx` documents |
-| [`pdf`](skills/pdf/SKILL.md) | PDF-native extraction, creation, page operations, forms, security, conversion, and explicit OCR routing |
+| [`pdf`](skills/pdf/SKILL.md) | PDF-native extraction, creation, rendering, page operations, forms, security, redaction, conversion, explicit OCR routing, and searchable-PDF composition |
 | [`pptx`](skills/pptx/SKILL.md) | Building, inspecting, editing, and converting Microsoft PowerPoint `.pptx` presentations |
 | [`review`](skills/review/SKILL.md) | Reviewing pull requests, local changes, or branch diffs, with help and optional GitHub comments |
 | [`skill-authoring`](skills/skill-authoring/SKILL.md) | Creating, revising, and reviewing standards-compliant Agent Skills |
