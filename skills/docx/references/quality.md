@@ -76,8 +76,8 @@ the user explicitly accepts the named exception.
 | Accessibility | Metadata includes title and BCP-47-style language appropriate to the document; headings form a logical outline; table headers, reading order, contrast, link meaning, image semantics, and native accessibility checker results meet the requested profile. Automated warnings are triage, not certification. |
 | TOC and fields | Include a TOC only when requested or when navigation complexity warrants it (normally multi-section documents with several heading levels or roughly 10+ pages). Use live fields for editable pagination. Inspect field type/instruction/result/dirty/locked state; refresh in the target layout application and confirm the TOC is populated and references are correct. |
 | Headers, footers, numbering | Story kind, section index, first/even-page settings, and `linked_to_previous` match the design. Page-number fields and `page_number_start`/format render correctly, including intentional restarts; no empty or duplicated inherited stories appear. |
-| Font portability | Do not infer portability from font names or PDF embedding. Licensed DOCX-embedded fonts are allowed. Every unembedded font must exist on every intended renderer; otherwise replace it or disclose reflow risk. Compare wrapping and pagination on each fidelity-critical renderer. |
-| Visual QA | Review every page of each final rendered deliverable at normal view and fit-page/print preview. Confirm correct paper/orientation, margins, hierarchy, line/table wrapping, image placement, captions, headers/footers, numbering, fields/TOC, no clipping/overlap, no accidental blank or nearly blank pages, and no unexplained reflow from the approved reference. |
+| Font portability | Do not infer portability from font names or PDF embedding. Licensed DOCX-embedded fonts are allowed. The font inventory carries zero unaccepted `RELEASE BLOCKER` warnings; `common_unembedded_fonts` (Office-bundled families) is acceptable when the audience is Office-equipped or the user accepts the substitution risk. Every other unembedded font must exist on every intended renderer; otherwise replace it or disclose reflow risk. Compare wrapping and pagination on each fidelity-critical renderer. |
+| Visual QA | Run `render` and open every produced page with the Read tool, reviewing each final deliverable at normal view and fit-page/print preview. Confirm correct paper/orientation, margins, hierarchy, line/table wrapping, image placement, captions, headers/footers, numbering, fields/TOC, no clipping/overlap, no accidental blank or nearly blank pages, and no unexplained reflow from the approved reference. |
 
 ## Visual review versus structural checks
 
@@ -87,6 +87,9 @@ text anchors, page dimensions, low-text/nearly-blank heuristics, and limited XOb
 These are **structural content checks**, not pixels: they cannot detect overlap, clipping,
 font substitution, bad wrapping, contrast, visual hierarchy, or whether a page looks correct.
 
-Real visual review requires rendering the final file with the target application and examining
-every page. If that cannot be done, report “structural checks only; visual QA not performed”
-and do not make layout, print, accessibility, or archive-conformance claims.
+Real visual review means producing pixels and looking at them. The bundled `render` command
+(see [render](references/operations.md#render)) is the built-in path: it publishes one PNG per
+page for review with the Read tool. The PNGs show LibreOffice's interpretation; the target
+application (normally Microsoft Word) remains the final authority for fidelity-critical
+deliverables. If neither is possible, report “structural checks only; visual QA not
+performed” and do not make layout, print, accessibility, or archive-conformance claims.

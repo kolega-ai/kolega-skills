@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 import re
 import shutil
@@ -44,6 +45,7 @@ try:
     from docx.text.paragraph import Paragraph
     from docx.text.run import Run
     from lxml import etree
+    from PIL import Image as PILImage
     from pypdf import PdfReader
     from pypdf import filters as pdf_filters
     from pypdf.errors import LimitReachedError
@@ -78,6 +80,51 @@ MAX_PDF_DECOMPRESSED_STREAM_BYTES = 8 * 1024 * 1024
 DEFAULT_CONVERSION_TIMEOUT = 90
 PROCESS_TERMINATION_GRACE_SECONDS = 2.0
 MAX_SUBPROCESS_DIAGNOSTIC_BYTES = 4_000
+MIN_RENDER_DPI = 36
+MAX_RENDER_DPI = 300
+DEFAULT_RENDER_DPI = 150
+MAX_RENDER_PAGES = 200
+MAX_RENDER_PIXELS_PER_PAGE = 25_000_000
+MAX_RENDER_TOTAL_PIXELS = 250_000_000
+
+# Portable: shipped with both Windows and macOS for decades; no substitution warning.
+PORTABLE_FONTS = {
+    "arial",
+    "arial black",
+    "comic sans ms",
+    "courier new",
+    "georgia",
+    "impact",
+    "tahoma",
+    "times new roman",
+    "trebuchet ms",
+    "verdana",
+}
+# Common: bundled with Microsoft Office or one major OS; metric-compatible LibreOffice
+# substitutes exist for the Office defaults (Carlito for Calibri, Caladea for Cambria).
+# Courier, Symbol, and Wingdings appear in default Word/python-docx templates (bullet and
+# mono glyphs) and are substituted essentially everywhere; blocking them would flag every
+# default-created document.
+COMMON_FONTS = {
+    "aptos",
+    "aptos display",
+    "calibri",
+    "calibri light",
+    "cambria",
+    "cambria math",
+    "candara",
+    "consolas",
+    "constantia",
+    "corbel",
+    "courier",
+    "franklin gothic",
+    "helvetica",
+    "segoe ui",
+    "segoe ui light",
+    "segoe ui semibold",
+    "symbol",
+    "wingdings",
+}
 
 EXIT_CODES = {
     "bad_input": 2,
@@ -288,6 +335,8 @@ def package_versions(include_libreoffice: str | None = None) -> dict[str, str | 
         "python-docx": distribution_version("python-docx"),
         "lxml": distribution_version("lxml"),
         "pypdf": distribution_version("pypdf"),
+        "pillow": distribution_version("Pillow"),
+        "pypdfium2": optional_distribution_version("pypdfium2"),
         "libreoffice": include_libreoffice,
     }
     return versions
@@ -304,6 +353,15 @@ def distribution_version(name: str) -> str:
             f"Required Python distribution is not installed: {name}",
             details={"distribution": name},
         ) from exc
+
+
+def optional_distribution_version(name: str) -> str | None:
+    """Read an optional distribution version, or None when it is not installed."""
+
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
 
 
 def secure_xml_parser() -> etree.XMLParser:
@@ -1281,19 +1339,36 @@ def inspect_document(
                 fonts=fonts["unembedded"],
             )
         )
-        portable_fonts = {"arial", "times new roman", "courier new"}
+        common_fonts = [font for font in fonts["unembedded"] if font.casefold() in COMMON_FONTS]
         nonportable_fonts = [
-            font for font in fonts["unembedded"] if font.casefold() not in portable_fonts
+            font
+            for font in fonts["unembedded"]
+            if font.casefold() not in PORTABLE_FONTS and font.casefold() not in COMMON_FONTS
         ]
+        if common_fonts:
+            warnings.append(
+                warning(
+                    "common_unembedded_fonts",
+                    (
+                        "DOCX references unembedded fonts that ship with Microsoft Office or "
+                        "one major operating system. Systems without them substitute fonts "
+                        "(LibreOffice uses metric-compatible Carlito and Caladea for Calibri "
+                        "and Cambria), so wrapping and pagination may shift slightly. This is "
+                        "acceptable for most business documents; embed the fonts or switch to "
+                        "the portable core set for print-critical deliverables."
+                    ),
+                    fonts=common_fonts,
+                )
+            )
         if nonportable_fonts:
             warnings.append(
                 warning(
                     "nonportable_unembedded_fonts",
                     (
                         "RELEASE BLOCKER: DOCX references unembedded fonts outside the "
-                        "conservative cross-renderer set (Arial, Times New Roman, Courier "
-                        "New). Replace these fonts before releasing matching DOCX and PDF "
-                        "deliverables; renderer substitution can change wrapping and pagination."
+                        "portable core set and the common Office-bundled set. Renderer "
+                        "substitution can change wrapping and pagination; replace or embed "
+                        "these fonts before releasing matching DOCX and PDF deliverables."
                     ),
                     fonts=nonportable_fonts,
                 )
@@ -2600,6 +2675,19 @@ def validate_job(job: dict[str, Any]) -> str:
             required_integer(job["timeout"], "timeout", minimum=1, maximum=3_600)
         if "overwrite" in job:
             optional_boolean(job["overwrite"], "overwrite")
+    elif operation == "render":
+        allow_keys(
+            job,
+            common | {"input", "output", "dpi", "pages", "timeout"},
+            "render job",
+        )
+        require_keys(job, {"input", "output"}, "render job")
+        if "dpi" in job:
+            required_integer(job["dpi"], "dpi", minimum=MIN_RENDER_DPI, maximum=MAX_RENDER_DPI)
+        if "pages" in job:
+            required_string(job["pages"], "pages")
+        if "timeout" in job:
+            required_integer(job["timeout"], "timeout", minimum=1, maximum=3_600)
     else:
         raise ToolError(
             "bad_input",
@@ -4285,6 +4373,45 @@ def bounded_process_run(
     return process.returncode, stdout, stderr, timed_out, process_group_cleaned
 
 
+def find_soffice() -> str:
+    """Resolve LibreOffice: explicit override, PATH, then well-known app locations."""
+
+    override = os.environ.get("DOCX_SOFFICE")
+    if override:
+        candidate = Path(override)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+        raise ToolError(
+            "missing_dependency",
+            "DOCX_SOFFICE does not point to an executable LibreOffice binary.",
+            details={"path": override},
+        )
+    for name in ("soffice", "libreoffice"):
+        executable = shutil.which(name)
+        if executable is not None:
+            return executable
+    if sys.platform == "darwin":
+        for candidate in (
+            Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"),
+            Path.home() / "Applications/LibreOffice.app/Contents/MacOS/soffice",
+        ):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    raise ToolError(
+        "missing_dependency",
+        "LibreOffice soffice is required for DOCX-to-PDF conversion.",
+        details={
+            "searched": [
+                "DOCX_SOFFICE",
+                "PATH:soffice",
+                "PATH:libreoffice",
+                "darwin:/Applications/LibreOffice.app/Contents/MacOS/soffice",
+                "darwin:~/Applications/LibreOffice.app/Contents/MacOS/soffice",
+            ],
+        },
+    )
+
+
 def libreoffice_version(executable: str) -> str:
     """Read a bounded LibreOffice version string."""
 
@@ -4316,15 +4443,90 @@ def libreoffice_version(executable: str) -> str:
     return text[:300] or "unknown"
 
 
+def require_pypdfium2() -> Any:
+    """Import the optional pypdfium2 rasterizer or fail with an install hint."""
+
+    try:
+        import pypdfium2
+    except ModuleNotFoundError as exc:
+        raise ToolError(
+            "missing_dependency",
+            "Page rendering requires the optional pypdfium2 package.",
+            details={"install": f'"{sys.executable}" -m pip install pypdfium2'},
+        ) from exc
+    return pypdfium2
+
+
+def file_sha256(path: Path) -> str:
+    """Hash a file in bounded chunks."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def parse_render_pages(value: str | None, page_count: int) -> list[int]:
+    """Select 1-based PDF page numbers, validated against the converted page count."""
+
+    if value is None:
+        selected = list(range(1, page_count + 1))
+    else:
+        chosen: set[int] = set()
+        for part in value.split(","):
+            text = part.strip()
+            if not text.isdigit():
+                raise ToolError(
+                    "bad_input",
+                    "pages must be a comma-separated list of 1-based page numbers.",
+                    details={"pages": value},
+                )
+            page = int(text)
+            if not 1 <= page <= page_count:
+                raise ToolError(
+                    "bad_input",
+                    "Requested page does not exist in the converted PDF.",
+                    details={"page": page, "pdf_pages": page_count},
+                )
+            chosen.add(page)
+        if not chosen:
+            raise ToolError("bad_input", "pages must select at least one page.")
+        selected = sorted(chosen)
+    if len(selected) > MAX_RENDER_PAGES:
+        raise ToolError(
+            "resource_limit",
+            "Rendering would produce too many pages; select a subset with pages.",
+            details={"pages": len(selected), "limit": MAX_RENDER_PAGES},
+        )
+    return selected
+
+
+def publish_directory_atomic(staged: Path, output: Path) -> None:
+    """Publish a staged directory to a destination that must not already exist."""
+
+    if output.exists():
+        raise ToolError(
+            "output_conflict",
+            "Atomic render publication requires a destination directory that does not "
+            "already exist.",
+            details={"path": str(output)},
+        )
+    try:
+        os.replace(staged, output)
+    except OSError as exc:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise ToolError(
+            "validation_failed",
+            "Could not atomically publish the output directory.",
+            details={"path": str(output), "reason": str(exc)},
+        ) from exc
+
+
 def convert_pdf_bytes(source: Path, timeout: int) -> tuple[bytes, dict[str, Any], str]:
     """Run headless LibreOffice with an isolated temporary profile."""
 
-    executable = shutil.which("soffice")
-    if executable is None:
-        raise ToolError(
-            "missing_dependency",
-            "LibreOffice soffice is required for DOCX-to-PDF conversion.",
-        )
+    executable = find_soffice()
     version = libreoffice_version(executable)
     with tempfile.TemporaryDirectory(prefix="docx-tool-lo-") as temp_name:
         root = Path(temp_name)
@@ -4509,6 +4711,219 @@ def convert_document(
     )
 
 
+def render_document(
+    source: Path,
+    output: Path,
+    *,
+    dpi: int,
+    pages: str | None,
+    timeout: int,
+    allow_external_relationships: bool,
+) -> dict[str, Any]:
+    """Render document pages to one PNG each through LibreOffice and PDFium."""
+
+    if (
+        isinstance(dpi, bool)
+        or not isinstance(dpi, int)
+        or not MIN_RENDER_DPI <= dpi <= MAX_RENDER_DPI
+    ):
+        raise ToolError(
+            "bad_input",
+            f"dpi must be an integer between {MIN_RENDER_DPI} and {MAX_RENDER_DPI}.",
+            details={"dpi": dpi},
+        )
+    if timeout < 1 or timeout > 3_600:
+        raise ToolError("bad_input", "timeout must be between 1 and 3600 seconds.")
+    if output.suffix:
+        raise ToolError(
+            "bad_input",
+            "Render output must be a directory path without a suffix.",
+            details={"path": str(output)},
+        )
+    if output.exists():
+        raise ToolError(
+            "output_conflict",
+            "Atomic render publication requires a destination directory that does not "
+            "already exist.",
+            details={"path": str(output)},
+        )
+    if not output.parent.is_dir():
+        raise ToolError(
+            "bad_input",
+            "Destination parent directory does not exist.",
+            details={"path": str(output.parent)},
+        )
+    pdfium = require_pypdfium2()
+    preflight_docx(source, allow_external_relationships=allow_external_relationships)
+    source_inspection, source_warnings = inspect_document(
+        source,
+        allow_external_relationships=allow_external_relationships,
+    )
+    source_hash = file_sha256(source)
+    data, conversion_diagnostics, version = convert_pdf_bytes(source, timeout)
+    images: list[dict[str, Any]] = []
+    staged = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
+    try:
+        with tempfile.TemporaryDirectory(prefix="docx-tool-render-") as temp_name:
+            temp_pdf = Path(temp_name) / "converted.pdf"
+            temp_pdf.write_bytes(data)
+            pdf_verification = validate_pdf(temp_pdf)
+            page_count = pdf_verification["page_count"]
+            try:
+                document = pdfium.PdfDocument(str(temp_pdf))
+            except Exception as exc:
+                raise ToolError(
+                    "external_tool_failed",
+                    "PDFium could not open the converted PDF.",
+                    details={"reason": str(exc)},
+                ) from exc
+            try:
+                if len(document) != page_count:
+                    raise ToolError(
+                        "validation_failed",
+                        "PDFium and pypdf disagree about the converted page count.",
+                        details={"pypdf_pages": page_count, "pdfium_pages": len(document)},
+                    )
+                selected = parse_render_pages(pages, page_count)
+                total_pixels = 0
+                for page_number in selected:
+                    page = document[page_number - 1]
+                    width_pt, height_pt = page.get_size()
+                    pixels = math.ceil(width_pt / 72 * dpi) * math.ceil(height_pt / 72 * dpi)
+                    if pixels > MAX_RENDER_PIXELS_PER_PAGE:
+                        raise ToolError(
+                            "resource_limit",
+                            "Rendered pixel count for one page exceeds the limit.",
+                            details={
+                                "page": page_number,
+                                "pixels": pixels,
+                                "limit": MAX_RENDER_PIXELS_PER_PAGE,
+                            },
+                        )
+                    total_pixels += pixels
+                    if total_pixels > MAX_RENDER_TOTAL_PIXELS:
+                        raise ToolError(
+                            "resource_limit",
+                            "Total rendered pixel count exceeds the limit.",
+                            details={"pixels": total_pixels, "limit": MAX_RENDER_TOTAL_PIXELS},
+                        )
+                    file_name = f"page-{page_number:03d}.png"
+                    staged_file = staged / file_name
+                    try:
+                        page.render(scale=dpi / 72).to_pil().save(staged_file, format="PNG")
+                    except Exception as exc:
+                        raise ToolError(
+                            "external_tool_failed",
+                            "PDFium could not rasterize a PDF page.",
+                            details={"page": page_number, "reason": str(exc)},
+                        ) from exc
+                    with staged_file.open("rb") as rendered:
+                        if rendered.read(8) != b"\x89PNG\r\n\x1a\n":
+                            raise ToolError(
+                                "validation_failed",
+                                "Rendered file does not have a PNG signature.",
+                                details={"file": file_name},
+                            )
+                    with PILImage.open(staged_file) as verified:
+                        verified.load()
+                        size = verified.size
+                    if size[0] * size[1] > MAX_RENDER_PIXELS_PER_PAGE:
+                        raise ToolError(
+                            "validation_failed",
+                            "Rendered image exceeds the per-page pixel limit.",
+                            details={"file": file_name},
+                        )
+                    png_bytes = staged_file.read_bytes()
+                    images.append(
+                        {
+                            "page": page_number,
+                            "file": file_name,
+                            "width_px": size[0],
+                            "height_px": size[1],
+                            "bytes": len(png_bytes),
+                            "sha256": hashlib.sha256(png_bytes).hexdigest(),
+                        }
+                    )
+            finally:
+                document.close()
+        if file_sha256(source) != source_hash:
+            raise ToolError(
+                "validation_failed",
+                "Source changed before the destination publication gate.",
+                details={"path": str(source)},
+            )
+        publish_directory_atomic(staged, output)
+    except Exception:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+    reopened = 0
+    for record in images:
+        published = output / record["file"]
+        png_bytes = published.read_bytes()
+        if hashlib.sha256(png_bytes).hexdigest() != record["sha256"]:
+            raise ToolError(
+                "validation_failed",
+                "Published rendering does not match its staged hash.",
+                details={"file": record["file"]},
+            )
+        with PILImage.open(published) as verified:
+            verified.load()
+        reopened += 1
+    pdf_verification["content_quality_report"]["raster_review_artifacts"] = [
+        record["file"] for record in images
+    ]
+    warnings = [
+        *source_warnings,
+        warning(
+            "layout_engine_variance",
+            "DOCX-to-PDF is best-effort and may differ from Microsoft Word layout.",
+        ),
+        warning(
+            "render_review_required",
+            "Rendering exists to be looked at: open the published PNG pages and review "
+            "layout before claiming visual correctness.",
+        ),
+    ]
+    if conversion_diagnostics.get("stderr"):
+        warnings.append(
+            warning(
+                "libreoffice_diagnostics",
+                "LibreOffice emitted diagnostics; inspect result.conversion.",
+            )
+        )
+    diagnostic(
+        "info",
+        "libreoffice",
+        "LibreOffice conversion completed.",
+        **conversion_diagnostics,
+    )
+    return success_summary(
+        "render",
+        paths={"input": str(source), "output": str(output)},
+        counts={
+            "pdf_pages": page_count,
+            "pages_rendered": len(images),
+            "source_fields": source_inspection["features"]["fields"],
+            "source_revisions": source_inspection["features"]["revisions"],
+            "source_comments": source_inspection["features"]["comments"],
+        },
+        warnings=warnings,
+        verification={
+            "atomic_publish": True,
+            "png_reopened": reopened,
+            "source_unchanged_at_publish_gate": True,
+            **pdf_verification,
+        },
+        result={
+            "format": "png",
+            "dpi": dpi,
+            "images": images,
+            "conversion": conversion_diagnostics,
+        },
+        libreoffice=version,
+    )
+
+
 def preservation_summary(warnings: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """Report preservation uncertainty without claiming universal round trips."""
 
@@ -4641,6 +5056,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_external_relationship_argument(convert_parser)
     add_common_output_arguments(convert_parser)
+
+    render_parser = subparsers.add_parser("render", help="Render DOCX pages to PNG images.")
+    render_parser.add_argument("--input", required=True, help="Source DOCX path.")
+    render_parser.add_argument(
+        "--output",
+        required=True,
+        help="Destination directory; must not already exist.",
+    )
+    render_parser.add_argument(
+        "--dpi",
+        type=int,
+        default=DEFAULT_RENDER_DPI,
+        help=f"Raster resolution between {MIN_RENDER_DPI} and {MAX_RENDER_DPI}.",
+    )
+    render_parser.add_argument(
+        "--pages",
+        help="Comma-separated 1-based PDF page numbers; default renders every page.",
+    )
+    render_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_CONVERSION_TIMEOUT,
+        help="LibreOffice timeout in seconds.",
+    )
+    add_external_relationship_argument(render_parser)
     return parser
 
 
@@ -4682,6 +5122,15 @@ def execute_direct(args: argparse.Namespace) -> dict[str, Any]:
             resolve_path(args.output, cwd, "output"),
             args.format,
             overwrite=args.overwrite,
+            timeout=args.timeout,
+            allow_external_relationships=args.allow_external_relationships,
+        )
+    if args.command == "render":
+        return render_document(
+            resolve_path(args.input, cwd, "input"),
+            resolve_path(args.output, cwd, "output"),
+            dpi=args.dpi,
+            pages=args.pages,
             timeout=args.timeout,
             allow_external_relationships=args.allow_external_relationships,
         )
@@ -4727,6 +5176,25 @@ def execute_job(job_path: str) -> dict[str, Any]:
             resolve_path(job.get("output"), base_dir, "output"),
             required_string(job.get("format"), "format"),
             overwrite=overwrite,
+            timeout=required_integer(
+                job.get("timeout", DEFAULT_CONVERSION_TIMEOUT),
+                "timeout",
+                minimum=1,
+                maximum=3_600,
+            ),
+            allow_external_relationships=allow_external_relationships,
+        )
+    if operation == "render":
+        return render_document(
+            resolve_path(job.get("input"), base_dir, "input"),
+            resolve_path(job.get("output"), base_dir, "output"),
+            dpi=required_integer(
+                job.get("dpi", DEFAULT_RENDER_DPI),
+                "dpi",
+                minimum=MIN_RENDER_DPI,
+                maximum=MAX_RENDER_DPI,
+            ),
+            pages=(required_string(job["pages"], "pages") if "pages" in job else None),
             timeout=required_integer(
                 job.get("timeout", DEFAULT_CONVERSION_TIMEOUT),
                 "timeout",

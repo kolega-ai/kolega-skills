@@ -8,6 +8,7 @@
 - [Create schema](#create-schema)
 - [Edit operations](#edit-operations)
 - [Conversion contract](#conversion-contract)
+- [Render](#render)
 - [Content blocks](#content-blocks)
 - [Sections and styles](#sections-and-styles)
 - [Headers and footers](#headers-and-footers)
@@ -29,7 +30,13 @@ Before installing a missing dependency, tell the user what will be installed, wh
 which installer. Then use `"$DOCX_PYTHON" -m pip install -r
 "$SKILL_ROOT/requirements.txt"`. Never use privileged pip, `--break-system-packages`, or host
 project dependency metadata. LibreOffice/`soffice` is optional and required only for PDF
-conversion; install it through the normal platform package manager only after notice.
+conversion and page rendering; install it through the normal platform package manager only
+after notice. The optional `pypdfium2` package is required only for `render`.
+
+LibreOffice discovery order: the `DOCX_SOFFICE` environment variable (must point to an
+executable; a bad value fails rather than falling through), then `soffice`/`libreoffice` on
+PATH, then the standard macOS app-bundle locations under `/Applications` and
+`~/Applications`.
 
 ## Invocation and envelopes
 
@@ -38,6 +45,7 @@ docx_tool.py inspect --input SOURCE.docx [--allow-external-relationships]
 docx_tool.py create --spec CREATE.json --output DEST.docx [--template BASE.docx] [--allow-external-relationships] [--overwrite]
 docx_tool.py edit --input SOURCE.docx --spec EDIT.json --output DEST.docx [--allow-external-relationships] [--overwrite]
 docx_tool.py convert --input SOURCE.docx --format text|pdf --output DEST [--timeout 90] [--allow-external-relationships] [--overwrite]
+docx_tool.py render --input SOURCE.docx --output DEST_DIR [--dpi 150] [--pages 1,3] [--timeout 90] [--allow-external-relationships]
 docx_tool.py --job JOB.json
 ```
 
@@ -175,9 +183,40 @@ decompressed stream, text extraction from at most 50 pages and 1,000,000 charact
 
 `verification.content_quality_report` contains `deterministic`, method, pypdf version,
 limitation, per-page dimensions/text count/`low_text`/`has_nontext_content`/`nearly_blank` and
-start/end anchors, `nearly_blank_pages`, and currently empty `raster_review_artifacts`.
-XObject detection is incomplete. This report is structural and does not render pixels or
-replace the [visual quality review](references/quality.md#visual-review-versus-structural-checks).
+start/end anchors, `nearly_blank_pages`, and `raster_review_artifacts` (empty for `convert`;
+`render` fills it with the published PNG file names). XObject detection is incomplete. This
+report is structural and does not render pixels or replace the
+[visual quality review](references/quality.md#visual-review-versus-structural-checks).
+
+## Render
+
+```bash
+"$DOCX_PYTHON" "$SKILL_ROOT/scripts/docx_tool.py" render \
+  --input source.docx --output pages-dir --dpi 150 --pages 1,2
+```
+
+Render converts the document to PDF through the same LibreOffice contract and limits as
+`convert`, then rasterizes the selected PDF pages to one PNG each with the optional
+`pypdfium2` package. Output naming is `page-001.png` upward, using 1-based PDF page numbers.
+Because DOCX has no fixed pagination, the page count is known only after conversion; `--pages`
+is validated against the converted PDF and a miss reports the real `pdf_pages`. Pages may
+differ in dimensions when sections mix orientation or paper size.
+
+The destination is a directory that must not already exist; pages are staged in a sibling
+temporary directory and published atomically only after every PNG passes signature, reopen,
+and pixel-budget verification, and the published files are reopened and hash-checked again.
+There is no `--overwrite` for render.
+
+Limits: `--dpi` 36–300 (default 150), at most 200 pages per invocation, 25,000,000 pixels per
+page, and 250,000,000 pixels per run, pre-charged from page geometry before rasterizing.
+`--timeout` bounds the LibreOffice step (default 90 seconds). LibreOffice or PDFium failures
+exit 10; pixel budgets exit 6; an existing destination exits 9.
+
+The result carries the source inspection warnings (including the font-portability tiers),
+`layout_engine_variance`, `libreoffice_diagnostics` when LibreOffice wrote to stderr, and
+`render_review_required`. Rendering exists to be looked at: open the published PNG pages and
+review layout before claiming visual correctness. The PNGs show LibreOffice's interpretation
+of the document, not Microsoft Word's, and fields are not refreshed before rendering.
 
 ## Content blocks
 
@@ -293,10 +332,12 @@ Inspection may emit preflight/external-relationship warnings and these public co
 
 - Fidelity/features: `fields_present`, `revisions_present`, `comments_present`,
   `floating_drawings_present`, `unsupported_drawings_present`, `unsupported_parts`.
-- Fonts: `unembedded_fonts`, `nonportable_unembedded_fonts`,
-  `dangling_font_embedding_relationships`. Treat font-name allowlists in warning wording as a
-  heuristic only: portability still depends on embedding/license or availability on every
-  intended renderer.
+- Fonts: `unembedded_fonts`, `common_unembedded_fonts` (Office-bundled families such as
+  Calibri, Cambria, Aptos, or Segoe UI; substitution possible but usually metric-compatible),
+  `nonportable_unembedded_fonts` (`RELEASE BLOCKER`; fonts outside the portable core and
+  common Office sets), `dangling_font_embedding_relationships`. Treat font-name allowlists in
+  warning wording as a heuristic only: portability still depends on embedding/license or
+  availability on every intended renderer.
 - Accessibility/structure: `missing_document_title`, `missing_document_language`,
   `heading_level_skip`, `data_table_without_header_row`,
   `informative_image_missing_alt_text`.

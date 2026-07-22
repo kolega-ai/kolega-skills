@@ -14,6 +14,7 @@ All jobs use schema version 1. Paths inside JSON resolve relative to that JSON f
 - [Update fields on open](#update-fields-on-open)
 - [Edit-time table, image, and style](#edit-time-table-image-and-style)
 - [Inspection and release flow](#inspection-and-release-flow)
+- [Render for visual review](#render-for-visual-review)
 - [Complete job dispatch](#complete-job-dispatch)
 
 ## Setup
@@ -435,10 +436,27 @@ PY
 ```
 
 Then apply [the requested delivery profile](references/quality.md#delivery-profiles). Review all DOCX
-warnings, refresh fields in the target application, and inspect every rendered page. The
-PDF's `content_quality_report` can flag structural anomalies; it is not visual QA. If visual
-review or a target renderer is unavailable, disclose that instead of claiming print,
-accessibility, archive, or cross-renderer fidelity.
+warnings, refresh fields in the target application, and render and review every page as shown
+in [render for visual review](#render-for-visual-review). The PDF's `content_quality_report`
+can flag structural anomalies; it is not visual QA. If visual review or a target renderer is
+unavailable, disclose that instead of claiming print, accessibility, archive, or
+cross-renderer fidelity.
+
+## Render for visual review
+
+```bash
+"$DOCX_PYTHON" "$DOCX_TOOL" render \
+  --input "$WORK/readiness-edited.docx" \
+  --output "$WORK/readiness-pages" --dpi 150 --timeout 90
+ls "$WORK/readiness-pages"
+```
+
+The destination directory must not already exist; rerunning the command against the same
+path exits 9 (`output_conflict`), so render into a fresh directory per revision. Open each
+published `page-NNN.png` with the Read tool and review it against the
+[Visual QA acceptance row](references/quality.md#acceptance-criteria). Render a subset while
+iterating with `--pages 1,3`; page numbers are 1-based positions in the converted PDF, and a
+number past the last page fails with the real `pdf_pages` count in the error details.
 
 ## Complete job dispatch
 
