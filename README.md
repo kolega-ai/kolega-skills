@@ -11,6 +11,7 @@ and adds repository-level validation, deterministic packaging, tests, and CI.
 
 | Skill | Use it for |
 | --- | --- |
+| [`deep-research`](skills/deep-research/SKILL.md) | Complex multi-source investigation, claim-level verification, and citation-backed synthesis—not ordinary lookups or search-result lists |
 | [`docx`](skills/docx/SKILL.md) | Creating, inspecting, editing, converting, and rendering Microsoft Word `.docx` documents, including PDF export and PNG page rendering for visual review |
 | [`pdf`](skills/pdf/SKILL.md) | PDF-native extraction, creation, rendering, page operations, forms, security, redaction, conversion, explicit OCR routing, and searchable-PDF composition |
 | [`pptx`](skills/pptx/SKILL.md) | Building, inspecting, editing, and converting Microsoft PowerPoint `.pptx` presentations |
