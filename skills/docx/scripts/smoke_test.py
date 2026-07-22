@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -408,6 +409,17 @@ def run_font_portability_regressions(tool: Path, root: Path, source: Path) -> No
             item["code"] == "nonportable_unembedded_fonts" for item in payload["warnings"]
         )
 
+    common = root / "common-font.docx"
+    rewrite_font_references(source, common, "Calibri")
+    payload = run_cli(tool, "inspect", "--input", str(common))
+    assert payload["result"]["fonts"]["referenced"] == ["Calibri"]
+    common_warning = next(
+        item for item in payload["warnings"] if item["code"] == "common_unembedded_fonts"
+    )
+    assert common_warning["fonts"] == ["Calibri"]
+    assert "RELEASE BLOCKER" not in common_warning["message"]
+    assert not any(item["code"] == "nonportable_unembedded_fonts" for item in payload["warnings"])
+
     custom = root / "custom-font.docx"
     rewrite_font_references(source, custom, "Avenir")
     payload = run_cli(tool, "inspect", "--input", str(custom))
@@ -417,6 +429,7 @@ def run_font_portability_regressions(tool: Path, root: Path, source: Path) -> No
     )
     assert blocker["fonts"] == ["Avenir"]
     assert blocker["message"].startswith("RELEASE BLOCKER:")
+    assert not any(item["code"] == "common_unembedded_fonts" for item in payload["warnings"])
     assert any(item["code"] == "unembedded_fonts" for item in payload["warnings"])
 
 
@@ -1592,6 +1605,236 @@ def run_fake_pdf_regressions(tool: Path, root: Path, source: Path) -> None:
     assert_process_gone(int(child_pid_path.read_text(encoding="utf-8")))
 
 
+def run_fake_render_regressions(tool: Path, root: Path, source: Path) -> dict[str, Any]:
+    """Exercise render mechanics and failure paths without real LibreOffice."""
+
+    if importlib.util.find_spec("pypdfium2") is None:
+        result = {
+            "status": "skipped",
+            "reason": "pypdfium2 is not installed; fake render regressions skipped.",
+        }
+        print(json.dumps({"diagnostic": "fake_render", **result}), file=sys.stderr)
+        return result
+
+    fake_bin = root / "fake-render-bin"
+    fake_bin.mkdir()
+    make_fake_soffice(fake_bin / "soffice")
+    fixture = root / "render-fixture.pdf"
+    write_pdf(fixture, 3)
+    environment = {
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+        "DOCX_SMOKE_SOFFICE_MODE": "copy",
+        "DOCX_SMOKE_PDF_FIXTURE": str(fixture),
+    }
+
+    output = root / "rendered-fake"
+    payload = run_cli(
+        tool,
+        "render",
+        "--input",
+        str(source),
+        "--output",
+        str(output),
+        environment=environment,
+    )
+    assert payload["status"] == "ok"
+    assert payload["operation"] == "render"
+    assert payload["counts"]["pdf_pages"] == 3
+    assert payload["counts"]["pages_rendered"] == 3
+    assert payload["verification"]["atomic_publish"] is True
+    assert payload["verification"]["png_reopened"] == 3
+    assert payload["verification"]["source_unchanged_at_publish_gate"] is True
+    artifacts = payload["verification"]["content_quality_report"]["raster_review_artifacts"]
+    assert artifacts == ["page-001.png", "page-002.png", "page-003.png"]
+    assert any(item["code"] == "render_review_required" for item in payload["warnings"])
+    for record in payload["result"]["images"]:
+        data = (output / record["file"]).read_bytes()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"
+        assert hashlib.sha256(data).hexdigest() == record["sha256"]
+        assert record["width_px"] > 0 and record["height_px"] > 0
+    assert sorted(item.name for item in output.iterdir()) == artifacts
+
+    subset_output = root / "rendered-subset"
+    payload = run_cli(
+        tool,
+        "render",
+        "--input",
+        str(source),
+        "--output",
+        str(subset_output),
+        "--pages",
+        "2",
+        environment=environment,
+    )
+    assert payload["counts"]["pages_rendered"] == 1
+    assert [item.name for item in subset_output.iterdir()] == ["page-002.png"]
+
+    bad_dpi_output = root / "rendered-bad-dpi"
+    payload = run_cli(
+        tool,
+        "render",
+        "--input",
+        str(source),
+        "--output",
+        str(bad_dpi_output),
+        "--dpi",
+        "20",
+        expected_status=2,
+        environment=environment,
+    )
+    assert payload["error"]["category"] == "bad_input"
+    assert not bad_dpi_output.exists()
+
+    payload = run_cli(
+        tool,
+        "render",
+        "--input",
+        str(source),
+        "--output",
+        str(output),
+        expected_status=9,
+        environment=environment,
+    )
+    assert payload["error"]["category"] == "output_conflict"
+
+    missing_page_output = root / "rendered-missing-page"
+    payload = run_cli(
+        tool,
+        "render",
+        "--input",
+        str(source),
+        "--output",
+        str(missing_page_output),
+        "--pages",
+        "9",
+        expected_status=2,
+        environment=environment,
+    )
+    assert payload["error"]["category"] == "bad_input"
+    assert payload["error"]["details"]["pdf_pages"] == 3
+    assert not missing_page_output.exists()
+
+    malformed_output = root / "rendered-malformed"
+    payload = run_cli(
+        tool,
+        "render",
+        "--input",
+        str(source),
+        "--output",
+        str(malformed_output),
+        expected_status=10,
+        environment={**environment, "DOCX_SMOKE_SOFFICE_MODE": "malformed"},
+    )
+    assert payload["error"]["category"] == "external_tool_failed"
+    assert not malformed_output.exists()
+    assert not any(item.name.startswith(".rendered-") for item in root.iterdir())
+
+    return {"status": "passed", "pages": 3}
+
+
+def run_soffice_discovery_regressions(tool: Path, root: Path, source: Path) -> None:
+    """Exercise the DOCX_SOFFICE override, including its no-fallthrough failure."""
+
+    fake_bin = root / "fake-discovery-bin"
+    fake_bin.mkdir()
+    fake_soffice = fake_bin / "soffice"
+    make_fake_soffice(fake_soffice)
+    fixture = root / "discovery-fixture.pdf"
+    write_pdf(fixture, 1)
+
+    override_output = root / "discovery-valid.pdf"
+    payload = run_cli(
+        tool,
+        "convert",
+        "--input",
+        str(source),
+        "--format",
+        "pdf",
+        "--output",
+        str(override_output),
+        environment={
+            "DOCX_SOFFICE": str(fake_soffice),
+            "DOCX_SMOKE_SOFFICE_MODE": "copy",
+            "DOCX_SMOKE_PDF_FIXTURE": str(fixture),
+        },
+    )
+    assert payload["verification"]["page_count"] == 1
+    # The blank fixture proves the override binary ran, not any soffice from PATH.
+    assert payload["verification"]["content_quality_report"]["pages"][0]["nearly_blank"] is True
+    assert override_output.is_file()
+
+    missing_binary = root / "missing-soffice"
+    missing_output = root / "discovery-missing.pdf"
+    payload = run_cli(
+        tool,
+        "convert",
+        "--input",
+        str(source),
+        "--format",
+        "pdf",
+        "--output",
+        str(missing_output),
+        expected_status=4,
+        environment={"DOCX_SOFFICE": str(missing_binary)},
+    )
+    assert payload["error"]["category"] == "missing_dependency"
+    assert payload["error"]["details"]["path"] == str(missing_binary)
+    assert not missing_output.exists()
+
+
+def find_soffice_for_smoke() -> str | None:
+    """Mirror the tool's LibreOffice discovery order for gating optional checks."""
+
+    override = os.environ.get("DOCX_SOFFICE")
+    if override:
+        candidate = Path(override)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+        return None
+    for name in ("soffice", "libreoffice"):
+        executable = shutil.which(name)
+        if executable:
+            return executable
+    if sys.platform == "darwin":
+        for candidate in (
+            Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"),
+            Path.home() / "Applications/LibreOffice.app/Contents/MacOS/soffice",
+        ):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    return None
+
+
+def run_render_check(tool: Path, source: Path, output: Path) -> dict[str, Any]:
+    """Render through real LibreOffice and verify the published PNG pages."""
+
+    if importlib.util.find_spec("pypdfium2") is None:
+        result = {
+            "status": "skipped",
+            "reason": "pypdfium2 is not installed; optional render check skipped.",
+        }
+        print(json.dumps({"diagnostic": "render_check", **result}), file=sys.stderr)
+        return result
+    payload = run_cli(
+        tool,
+        "render",
+        "--input",
+        str(source),
+        "--output",
+        str(output),
+        timeout=120,
+    )
+    assert payload["counts"]["pages_rendered"] == payload["counts"]["pdf_pages"]
+    assert payload["counts"]["pages_rendered"] >= 1
+    assert payload["verification"]["png_reopened"] == payload["counts"]["pages_rendered"]
+    for record in payload["result"]["images"]:
+        data = (output / record["file"]).read_bytes()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"
+        assert hashlib.sha256(data).hexdigest() == record["sha256"]
+        assert record["width_px"] > 0 and record["height_px"] > 0
+    return {"status": "passed", "pages_rendered": payload["counts"]["pages_rendered"]}
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build smoke-test arguments."""
 
@@ -1780,6 +2023,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_external_relationship_regression(tool, root, created)
         run_custom_xml_regression(tool, root, created)
         run_fake_pdf_regressions(tool, root, created)
+        fake_render_result = run_fake_render_regressions(tool, root, created)
+        run_soffice_discovery_regressions(tool, root, created)
 
         corrupt = root / "corrupt.docx"
         corrupt.write_bytes(b"not a zip")
@@ -1792,12 +2037,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         assert failure["error"]["category"] == "bad_input"
 
-        soffice = shutil.which("soffice")
+        soffice = find_soffice_for_smoke()
         quality_result = run_quality_upgrade_regressions(
             tool, root, original_image, libreoffice=bool(soffice)
         )
         if soffice:
             pdf_result = run_pdf_check(tool, edited, root / "edited.pdf")
+            render_result = run_render_check(tool, edited, root / "rendered-pages")
         elif args.require_libreoffice:
             print(
                 json.dumps(
@@ -1820,6 +2066,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "reason": "LibreOffice soffice is not installed; optional PDF check skipped.",
             }
             print(json.dumps({"diagnostic": "pdf_check", **pdf_result}), file=sys.stderr)
+            render_result = {
+                "status": "skipped",
+                "reason": "LibreOffice soffice is not installed; optional render check skipped.",
+            }
+            print(json.dumps({"diagnostic": "render_check", **render_result}), file=sys.stderr)
 
         print(
             json.dumps(
@@ -1843,9 +2094,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "external_relationships": "passed",
                         "custom_xml": "passed",
                         "bounded_pdf_and_process_cleanup": "passed",
+                        "fake_render": fake_render_result,
+                        "soffice_discovery": "passed",
                         "quality_upgrade": quality_result,
                         "corrupt_input": "passed",
                         "pdf_conversion": pdf_result,
+                        "render": render_result,
                     },
                     "fixtures": "temporary_directory_removed",
                 },

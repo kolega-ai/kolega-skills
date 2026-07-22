@@ -1,24 +1,30 @@
 ---
 name: docx
-description: Create, inspect, edit, extract text from, and convert Microsoft Word DOCX documents while preserving formatting and validating OOXML safely. Use for .docx authoring, reading, structured edits, templates or letterheads, tables, images, headers, footers, fields, DOCX-to-text, and DOCX-to-PDF requests. Do not use for PDF-native, spreadsheet, or presentation work.
+description: Create, inspect, edit, extract text from, convert, and render Microsoft Word DOCX documents while preserving formatting and validating OOXML safely. Use for .docx authoring, reading, structured edits, templates or letterheads, tables, images, headers, footers, fields, DOCX-to-text, DOCX-to-PDF, and page-rendering-for-review requests. Do not use for PDF-native, spreadsheet, or presentation work.
 license: Apache-2.0
-compatibility: Requires Python 3.11+; LibreOffice is optional for DOCX-to-PDF conversion.
+compatibility: Requires Python 3.11+ and the packages declared in requirements.txt. LibreOffice and the optional pypdfium2 package are needed only for PDF conversion and page rendering.
 metadata:
   author: Kolega
-  version: "1.0"
+  version: "1.1"
 ---
 
 # DOCX
 
 Use the bundled deterministic CLI. Treat sources as untrusted and immutable unless overwrite
-is explicitly authorized. Work in visible workspace paths; do not stage work in hidden build
-directories.
+is explicitly authorized.
+
+## Workspace discipline
+
+Work directly in visible workspace paths. Never create or use `.build` or another hidden
+build/work directory. Write requested deliverables directly to their declared destinations;
+if intermediate files are necessary, keep them in visible, narrowly scoped paths rather than
+staging the task in a hidden subtree.
 
 ## Route the task
 
-- Use this skill for DOCX creation, inspection, bounded editing, text extraction, and
-  DOCX-to-PDF conversion. Route PDF-native work to `pdf`, spreadsheets to `xlsx`, and
-  presentations to `pptx`.
+- Use this skill for DOCX creation, inspection, bounded editing, text extraction,
+  DOCX-to-PDF conversion, and page rendering for visual review. Route PDF-native work to
+  `pdf`, spreadsheets to `xlsx`, and presentations to `pptx`.
 - For creation, read [design intake and templates](references/quality.md#design-intake-and-templates),
   then the [create contract](references/operations.md#create-schema). Use a supplied or approved
   template for branded or publication-ready output. Otherwise build a deliberate baseline with
@@ -52,9 +58,18 @@ directories.
 5. Keep edits explicit and bounded. Write to a distinct destination unless overwrite was
    explicitly authorized.
 6. Reinspect the output and run the profile-dependent checks in
-   [quality](references/quality.md#acceptance-criteria). Rendering is required whenever layout,
-   pagination, print, or PDF matters; inspect-only PDF metrics are not visual review.
-7. Report warnings, renderer assumptions, field-refresh status, and preservation uncertainty.
+   [quality](references/quality.md#acceptance-criteria). Resolve every font warning: a
+   `RELEASE BLOCKER` blocks release until the font is replaced, embedded, or the user
+   explicitly accepts the named substitution risk.
+7. **Render and look.** Whenever layout, pagination, print, or PDF matters, run `render`
+   (see [render](references/operations.md#render)), open the produced PNG pages with the
+   Read tool, and examine every changed page plus page 1 for text overflow or truncation,
+   clipped or overlapping content, missing images, broken tables, and header/footer and
+   page-number rendering. Inspect-only PDF metrics are not visual review; never claim visual
+   correctness from JSON output alone. If rendering is unavailable, report "structural
+   checks only; visual QA not performed." Announce before installing the optional
+   `pypdfium2` package.
+8. Report warnings, renderer assumptions, field-refresh status, and preservation uncertainty.
    Never promise perfect round-trip fidelity.
 
 ## Safety rules
@@ -82,5 +97,8 @@ directories.
 - Environment smoke test: [`scripts/smoke_test.py`](scripts/smoke_test.py)
 
 Finish by confirming the source was not changed without authorization, the destination
-reopens, requested structures are present, applicable quality checks passed, warnings were
-reviewed, and no generated fixtures remain in the skill directory.
+reopens, requested structures are present, the applicable
+[acceptance criteria](references/quality.md#acceptance-criteria) passed, no unaccepted
+`RELEASE BLOCKER` font warning remains, rendered pages were opened and reviewed (or the
+structural-only disclaimer was reported), and no generated fixtures remain in the skill
+directory.

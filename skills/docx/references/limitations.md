@@ -69,6 +69,13 @@ content controls, forms, document protection, rights management, mail merge, or 
 LibreOffice conversion is best-effort and may differ from Microsoft Word in font substitution,
 line/table wrapping, page breaks, fields, drawing placement, and TOC references.
 
+`render` output inherits every conversion caveat: the PNG pages show LibreOffice's
+interpretation of the document with unrefreshed fields, not Microsoft Word's layout. Rendered
+pages are a review aid, never a deliverable, and are bounded by the pixel and page budgets in
+[render](references/operations.md#render). Rendering additionally requires the optional
+`pypdfium2` package; without it, only structural checks are available and that must be
+disclosed.
+
 `verification.content_quality_report` uses pypdf extraction, page boxes, and limited XObject
 detection. Its text anchors, low-text/nearly-blank flags, and page dimensions are structural
 metrics—not raster rendering or visual QA. They cannot detect clipping, overlap, hierarchy,
