@@ -13,13 +13,19 @@ sequential fallback; do not silently fall back.
 
 ## Before invocation
 
-1. Settle the brief, report profile, tier, output path, and disjoint lanes.
-2. If `list_subagent_models` is available, call it exactly once.
-3. Select complete exact route objects only from that response, applying the
+1. Confirm that the research brief is complete and confirmed with the user.
+   The `intake` object passed to `run_workflow` must carry `confirmed: true`
+   (or `mode: "user_directed_defaults"` for the no-questions exception with all
+   four resolved fields present). The workflow validates intake before any worker
+   dispatch and returns the standard failed result when intake is missing or
+   invalid.
+2. Settle the tier, output path, and disjoint lanes from the confirmed brief.
+3. If `list_subagent_models` is available, call it exactly once.
+4. Select complete exact route objects only from that response, applying the
    same-family-first policy below. Omit a route when no safe alternate is clear.
-4. Read `scripts/deep-research.workflow` and pass its content unchanged to
+5. Read `scripts/deep-research.workflow` and pass its content unchanged to
    `run_workflow`.
-5. Announce the output path before starting.
+6. Announce the output path before starting.
 
 No provider, model ID, or fixed effort selection belongs in this skill. Route
 objects exist only in the current invocation's arguments.
@@ -30,6 +36,12 @@ Pass an object with this shape:
 
 ```json
 {
+  "intake": {
+    "mode": "interactive",
+    "confirmed": true,
+    "resolved_fields": ["length", "audience_use", "scope", "delivery"],
+    "topic_questions_asked": 2
+  },
   "brief": {
     "question": "The settled research question",
     "audience": "Who will read and use the report",
@@ -54,6 +66,7 @@ Pass an object with this shape:
   },
   "report_profile": {
     "kind": "historical-cultural",
+    "length": "standard",
     "voice": "Engaging, precise, and accessible",
     "target_words": 3000,
     "required_structure": [],
@@ -78,11 +91,25 @@ The example values describe a Standard run; adjust ceilings to the tier table in
 a route key only when its value is a complete object returned for the current
 session.
 
-Infer `target_words` conservatively from the user's request and tier. The user does
-not select a drafting mode. After verification, coverage analysis decides whether
-the report needs bounded section drafting. A target of roughly 5,000 words or more
-qualifies; a shorter report qualifies only when it has at least two genuinely
-independent reader-facing sections with distinct verified claim sets.
+Map the user's confirmed length preset to `target_words` exactly:
+
+| `report_profile.length` | `target_words` |
+| --- | ---: |
+| `concise` | 1,500 |
+| `standard` | 3,000 |
+| `detailed` | 6,000 |
+| `long` | ≥ 10,000 (use the confirmed custom numeric target) |
+| `custom` | any explicit user-confirmed target ≥ 500 |
+
+`long` requires a confirmed numeric target of at least 10,000. `custom` accepts any
+target confirmed by the user of at least 500. There is no silent default for
+`target_words`; an invocation without a valid `length` preset and corresponding
+numeric target is rejected before dispatch.
+
+The user does not select a drafting mode. After verification, coverage analysis
+decides whether the report needs bounded section drafting. A target of roughly
+5,000 words or more qualifies; a shorter report qualifies only when it has at least
+two genuinely independent reader-facing sections with distinct supported claim sets.
 
 Lane-count validation:
 
@@ -205,8 +232,8 @@ target.
 - Read `resultPath` first when inline workflow output is omitted.
 - Read `transcriptPath` only to diagnose stage failure or budget use.
 - Resume to reuse an unchanged successful prefix while narrowing later work.
-- If some lanes failed, proceed only when verified surviving evidence supports an
-  honest answer. Mark the result `partial` and name the consequential gaps.
+- If some lanes failed, proceed only when the surviving supported evidence can
+  sustain an honest answer. Mark the result `partial` and name the consequential gaps.
 - If no supported report exists, return `failed`; the materializer must not create an
   empty file.
 - Never rerun a completed workflow solely to recover a long result from chat output.

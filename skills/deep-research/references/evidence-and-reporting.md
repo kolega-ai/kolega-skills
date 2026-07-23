@@ -4,6 +4,30 @@ Use this reference to keep deep research rigorous without turning every report i
 an institutional audit. The evidence rules are fixed; the report's structure and
 voice are reader-dependent.
 
+## Briefing and source planning
+
+Topic-specific intake questions should change what is researched, not serve as
+procedural form-filling. Before assigning source classes to lanes, use the answers
+from intake to narrow scope and select evidence:
+
+- **Scope answer** sets the timeframe, jurisdiction, geography, or comparison set
+  for every lane, eliminating irrelevant source classes before acquisition begins.
+- **Interpretive-lens question** (historical/cultural) targets primary texts,
+  scholarly commentary, and reception records rather than news sources.
+- **Options/constraints question** (product/market) determines whether technical
+  documentation, independent benchmarks, or regulatory filings belong in scope.
+- **Jurisdiction/decision question** (disputed/high-stakes) specifies which legal,
+  clinical, or policy evidence applies and at what threshold.
+- **Communities/period question** (experiential/community) identifies the platforms,
+  forums, or archival sources appropriate for lived-experience evidence.
+- **Audience and use answer** calibrates evidence depth: a practitioner audience
+  may need primary or technical sources where a general audience benefits from
+  authoritative synthesis.
+
+Treat intake as a research-design step. If the topic-specific answers do not change
+any lane boundary, source class, or evidence standard, the questions were not
+specific enough.
+
 ## 1. Build claims from evidence
 
 Separate four layers:
@@ -183,17 +207,17 @@ the next stage needs.
 - failed acquisitions; and
 - unresolved gaps.
 
-### Verified lane delta
+### Verification delta
 
 - claim verdicts and approved evidence IDs;
 - qualifications and rejections;
 - only new sources/evidence;
 - new failures and remaining gaps; and
-- a short verified synthesis.
+- a short verifier synthesis.
 
 ### Coverage input
 
-- one short verified synthesis per lane;
+- one short supported synthesis per lane;
 - conclusion-driving claim index;
 - source-class coverage;
 - unresolved gaps and failed-source effects; and
@@ -218,7 +242,7 @@ evidence boundaries; report sections are reader-facing argument boundaries.
 
 When section drafting is warranted:
 
-1. coverage returns a short outline, purpose, and verified claim IDs per section;
+1. coverage returns a short outline, purpose, and supported claim IDs per section;
 2. draft the bounded sections in parallel using only their assigned claims;
 3. run one synthesis pass to remove repetition, reconcile transitions, normalize
    voice, and preserve the opening thesis and conclusion; and

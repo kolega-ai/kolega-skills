@@ -14,7 +14,7 @@ compatibility: >
   before offering a bounded sequential fallback when orchestration is unavailable.
 metadata:
   owner: Kolega
-  version: "2.0"
+  version: "2.1"
 ---
 
 # Deep Research
@@ -39,10 +39,118 @@ Do not activate it for near misses such as:
 - "Summarize this one article." — read and summarize that source without a research
   workflow.
 
+## Brief the report with the user
+
+Before checking Gigacode availability or acquiring sources, ask one compact batch
+covering all unresolved core fields and 1–3 genuinely topic-specific questions. A
+silent capability check may occur at any time, but do not offer the Gigacode
+enablement choice until the brief is confirmed.
+
+### Core fields
+
+Extract everything the initial request already answers and carry those values into
+the confirmation summary. Ask only what remains unresolved:
+
+- **Length** — offer exactly these presets:
+  - `concise` — about 1,500 words;
+  - `standard` — about 3,000 words;
+  - `detailed` — about 6,000 words;
+  - `long` — 10,000 words or more;
+  - or a custom word target.
+
+  Map `long` to a 10,000-word minimum. If the user wants materially more than
+  10,000 words, obtain a concrete custom target before confirmation. Never infer
+  length from tier when the user has not supplied it.
+
+- **Audience and use** — who will read the report and what decision,
+  understanding, or action it should support.
+
+- **Scope** — relevant timeframe, geography, comparison set, definitions,
+  inclusions, and exclusions. Ask only the applicable dimensions.
+
+- **Delivery** — Markdown artifact and path versus conversation-only; preserve
+  the collision-safe default when the user accepts it.
+
+### Topic-specific questions
+
+In the same batch, ask 1–3 concise questions whose answers will shape lanes,
+evidence standards, or synthesis. Choose questions specific to this topic, for
+example:
+
+- **Historical/cultural:** endpoint, tradition or interpretive lens, primary
+  practice versus later reception.
+- **Product/market:** options, operating constraints, decision criteria, current
+  environment.
+- **Disputed/high-stakes:** jurisdiction, decision at stake, acceptable evidence
+  threshold.
+- **Experiential/community:** communities or platforms, period, whose experiences
+  matter, desired treatment of representativeness.
+
+Do not ask generic questions that merely restate the title, expose workflow
+mechanics, or ask the user to choose tier, lanes, models, verification, audit, or
+drafting mode.
+
+### Proposed research brief
+
+After the user answers, return a compact **Proposed research brief** containing
+the research question, audience and use, scope, selected length preset and numeric
+target, report style and structure requirements, delivery path or mode, and the
+settled topic-specific decisions. Explicitly ask the user to confirm or correct
+the brief, and wait. Begin Gigacode enablement, routing, and research only after
+confirmation.
+
+### Narrow exceptions
+
+- **Already-answered field:** skip that question; show the extracted value in the
+  confirmation summary.
+- **User-directed no-questions:** if the user explicitly asks not to be asked
+  follow-ups or to start immediately, state the proposed defaults—including a
+  concrete word target—and proceed without the second confirmation turn. Record
+  this as a user-directed exception.
+- **Correction:** reopens only the affected part of the brief; do not repeat the
+  complete questionnaire.
+
+### Examples
+
+**Underspecified request — "Research the history of Saturnian magic."**
+
+No core fields are supplied. Ask all four plus a topic question in one batch:
+
+> To research this well I need a few details.
+>
+> **Length:** concise (~1,500 words), standard (~3,000), detailed (~6,000), long
+> (10,000+), or a custom target?
+> **Audience and use:** who will read this and what should it help them understand
+> or decide?
+> **Scope:** any particular traditions, periods, or geographies to focus on or
+> exclude?
+> **Delivery:** Markdown file (I will propose a collision-safe path) or
+> in-conversation?
+> **Topic question:** Are you more interested in the ancient and Renaissance
+> textual tradition, the later occult revival, or both?
+
+After the user answers, summarize the **Proposed research brief** and wait for
+confirmation before proceeding.
+
+**Detailed initial request — "Write a detailed 6,000-word report on Saturnian magic
+in Renaissance Europe for a general educated audience, focusing on Ficino and
+Agrippa, as a Markdown file."**
+
+Length (`detailed` / 6,000 words), audience, scope, and delivery are all resolved.
+Skip those questions and ask only what remains:
+
+> You have given me most of what I need. One question before I start:
+>
+> Should the report emphasize the philosophical underpinnings of Saturn's role, the
+> practical magical techniques described, or both in roughly equal measure?
+
+After the user answers, return the **Proposed research brief** and wait for
+confirmation.
+
 ## Check Gigacode before research
 
-For every substantive deep-research request, check whether `run_workflow` is
-available before acquiring sources. If it is unavailable and the user has not
+After the brief is confirmed, check whether `run_workflow` is available before
+acquiring sources. If it is unavailable and the user has not
 already requested sequential execution or told you to continue without Gigacode,
 pause and offer this choice:
 
@@ -63,18 +171,12 @@ When Gigacode is available, also read the concise
 [`scripts/deep-research.workflow`](scripts/deep-research.workflow) instead of
 generating a new orchestration script.
 
-## 1. Settle the brief and delivery before research
+## 1. Apply the confirmed brief and settle delivery
 
-Infer low-risk details; ask only questions whose answers materially change the work.
-Record:
-
-- the exact question and decision or reader need;
-- audience, timeframe, geography, comparison set, and exclusions;
-- requested length and due date, if any;
-- report profile and voice;
-- whether the question is current, historical, disputed, or high-stakes;
-- explicit user formatting requirements; and
-- output mode and path.
+Use the question, audience, scope, length target, and delivery mode confirmed during
+intake. Do not re-ask resolved fields. If a detail needed for the artifact path or
+report profile was not covered during intake, resolve it now before announcing the
+output path.
 
 ### Artifact-first delivery
 
@@ -175,11 +277,15 @@ The workflow researches lanes in bounded batches, verifies only important or
 disputed claims, constructs its registry and bibliography deterministically, and
 uses one ordinary drafting agent. The skill—not the user—decides whether section
 fan-out is warranted after coverage analysis. It uses sections for an explicitly
-long report, usually around 5,000 words or more, or when the verified evidence
+long report, usually around 5,000 words or more, or when the supported evidence
 separates into genuinely independent sections that benefit from bounded parallel
 drafting. A synthesis pass then unifies argument, transitions, voice, and citations.
 
 ### Sequential fallback
+
+The confirmed brief from intake applies to sequential research unchanged. Bypassing
+Gigacode does not bypass intake; if the brief has not been confirmed, complete it
+before proceeding.
 
 If Gigacode is unavailable and the user chooses to continue without it:
 
@@ -238,7 +344,7 @@ imitating an author, or sacrificing precision. Keep material uncertainty near th
 affected claim, but do not expose worker mechanics, evidence IDs, audit language, or
 repeated boilerplate caveats in the report.
 
-Infer a numeric target length from the request for orchestration purposes. Do not
+Use the confirmed numeric target from intake for orchestration purposes. Do not
 ask the user to choose single-agent versus section-based drafting.
 
 ## 8. Audit only what needs judgment
