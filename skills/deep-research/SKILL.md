@@ -23,12 +23,6 @@ Produce a useful report, not a transcript of research operations. Research only 
 widely as the question, stakes, and remaining uncertainty require. Preserve source
 quality and uncertainty while adapting the report's shape and voice to its readers.
 
-Read [Evidence and reporting](references/evidence-and-reporting.md) before research.
-When Gigacode is available, also read the concise
-[Gigacode workflow guide](references/gigacode-workflow.md) and invoke the bundled
-[`scripts/deep-research.workflow`](scripts/deep-research.workflow) instead of
-generating a new orchestration script.
-
 ## Activation examples
 
 Use this skill for requests such as:
@@ -44,6 +38,30 @@ Do not activate it for near misses such as:
 - "What year did the policy take effect?" — answer the fact directly.
 - "Summarize this one article." — read and summarize that source without a research
   workflow.
+
+## Check Gigacode before research
+
+For every substantive deep-research request, check whether `run_workflow` is
+available before acquiring sources. If it is unavailable and the user has not
+already requested sequential execution or told you to continue without Gigacode,
+pause and offer this choice:
+
+> Gigacode is off. Parallel research is faster and keeps the bounded research lanes
+> isolated. Run `/gigacode on` and then resend this research request, or tell me to
+> continue without Gigacode.
+
+Do not claim that the skill can execute a TUI slash command itself. Do not start the
+sequential fallback until the user chooses it. If the user continues without
+Gigacode, do not ask again during that research request. If `run_workflow` is
+available, proceed without this prompt; absence of `list_subagent_models` alone does
+not mean Gigacode is off.
+
+After this preflight, read
+[Evidence and reporting](references/evidence-and-reporting.md) before research.
+When Gigacode is available, also read the concise
+[Gigacode workflow guide](references/gigacode-workflow.md) and invoke the bundled
+[`scripts/deep-research.workflow`](scripts/deep-research.workflow) instead of
+generating a new orchestration script.
 
 ## 1. Settle the brief and delivery before research
 
@@ -152,7 +170,7 @@ drafting. A synthesis pass then unifies argument, transitions, voice, and citati
 
 ### Sequential fallback
 
-If Gigacode is unavailable:
+If Gigacode is unavailable and the user chooses to continue without it:
 
 1. Research the same 2–6 disjoint lanes sequentially with the same ceilings.
 2. Keep one compact source/evidence registry and failed-acquisition ledger.

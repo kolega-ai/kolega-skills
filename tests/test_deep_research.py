@@ -13,6 +13,7 @@ from scripts.package_skill import package_skill
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPOSITORY_ROOT / "skills" / "deep-research"
+SKILL_PATH = SKILL_ROOT / "SKILL.md"
 WORKFLOW_PATH = SKILL_ROOT / "scripts" / "deep-research.workflow"
 MATERIALIZER_PATH = SKILL_ROOT / "scripts" / "materialize_report.py"
 
@@ -28,6 +29,24 @@ def load_materializer() -> Any:
 
 
 MATERIALIZER = load_materializer()
+
+
+class DeepResearchSkillContractTests(unittest.TestCase):
+    def test_prompts_to_enable_gigacode_before_sequential_fallback(self) -> None:
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        guide = (SKILL_ROOT / "references" / "gigacode-workflow.md").read_text(encoding="utf-8")
+
+        preflight = skill.index("## Check Gigacode before research")
+        settle_brief = skill.index("## 1. Settle the brief")
+        self.assertLess(preflight, settle_brief)
+        self.assertIn("check whether `run_workflow` is\navailable", skill)
+        self.assertIn("Run `/gigacode on`", skill)
+        self.assertIn("Do not start the\nsequential fallback until the user chooses it.", skill)
+        self.assertIn("do not ask again during that research request", skill)
+        self.assertIn(
+            "absence of `list_subagent_models` alone does\nnot mean Gigacode is off", skill
+        )
+        self.assertIn("do not silently fall back", guide)
 
 
 class FakeBudget:

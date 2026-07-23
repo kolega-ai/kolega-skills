@@ -7,6 +7,10 @@ This guide defines the runtime arguments, routing procedure, budget behavior, an
 recovery path. Kolega Code's injected Gigacode authoring guide remains authoritative
 for primitive signatures.
 
+Use this guide only after the skill's Gigacode preflight. If `run_workflow` is
+unavailable, prompt the user to run `/gigacode on` or explicitly choose the
+sequential fallback; do not silently fall back.
+
 ## Before invocation
 
 1. Settle the brief, report profile, tier, output path, and disjoint lanes.
