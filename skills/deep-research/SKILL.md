@@ -10,8 +10,8 @@ description: >
 license: Apache-2.0
 compatibility: >
   Requires web search and page-reading tools for live research. Best with Kolega
-  Code Gigacode workflows and runtime model discovery; includes a bounded sequential
-  fallback when orchestration or alternate routes are unavailable.
+  Code Gigacode workflows and runtime model discovery; prompts to enable Gigacode
+  before offering a bounded sequential fallback when orchestration is unavailable.
 metadata:
   owner: Kolega
   version: "2.0"
