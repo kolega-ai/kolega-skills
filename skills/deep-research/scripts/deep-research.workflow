@@ -1,5 +1,5 @@
 meta = {
-    "name": "bounded-deep-research",
+    "name": "deep-research",
     "description": "Research disjoint lanes, adaptively verify claims, and produce a compact cited report",
     "max_agent_depth": 1,
     "phases": [

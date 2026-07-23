@@ -570,6 +570,7 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         )
         meta = ast.literal_eval(meta_assignment.value)
 
+        self.assertEqual(meta["name"], "deep-research")
         self.assertEqual(meta["max_agent_depth"], 1)
         self.assertGreaterEqual(len(meta["phases"]), 6)
         self.assertFalse(
