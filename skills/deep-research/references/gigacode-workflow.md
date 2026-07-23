@@ -15,8 +15,8 @@ sequential fallback; do not silently fall back.
 
 1. Settle the brief, report profile, tier, output path, and disjoint lanes.
 2. If `list_subagent_models` is available, call it exactly once.
-3. Select complete exact route objects only from that response. Omit a route when no
-   safe alternate is clear.
+3. Select complete exact route objects only from that response, applying the
+   same-family-first policy below. Omit a route when no safe alternate is clear.
 4. Read `scripts/deep-research.workflow` and pass its content unchanged to
    `run_workflow`.
 5. Announce the output path before starting.
@@ -103,6 +103,22 @@ Map work to runtime routes by capability:
 - `synthesis`: coverage judgment, final argument, and material revision;
 - `audit`: bounded evidence/editorial checks;
 - `acquisition`: the one permitted Browser or local escalation.
+
+Choose one routing family rather than a different provider for every role:
+
+1. If the user names a model family, use it. Otherwise use the effective
+   Investigation default's provider and model family as the anchor.
+2. First vary effort on the same exact model: lower it for bounded discovery and
+   mechanical checks, and raise it for verification and synthesis.
+3. If useful, choose a runtime-listed faster or stronger sibling only when it is
+   clearly in the same provider and model lineage.
+4. If lineage is ambiguous, keep the exact anchor model or inherit the configured
+   default. Sharing a provider is not enough to infer family membership.
+5. Do not distribute ordinary stages across unrelated providers or families merely
+   to optimize each role independently.
+6. Use another family only at the user's direction or when the anchor family lacks
+   a required capability. Keep a capability-driven exception to the affected role
+   and disclose it.
 
 The workflow omits `model_override` when a key is absent. It never invents a partial
 override or falls back from an invalid one.

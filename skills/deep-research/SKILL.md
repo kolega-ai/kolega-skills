@@ -129,18 +129,29 @@ sources to meet a quota.
 When Gigacode and model discovery are available:
 
 1. Call `list_subagent_models` once.
-2. Select exact configured routes for abstract stage roles and pass them in workflow
-   `args.routes`.
-3. Prefer a faster/lower-cost adequate route for bounded discovery, extraction,
-   coverage classification, and mechanical/editorial checks.
-4. Reserve the stronger route for difficult conclusion-driving verification,
-   conflict resolution, and synthesis.
-5. If no safe alternate is clear, omit that role's override and inherit the
+2. Use the user's requested model family when specified; otherwise anchor routing
+   to the effective Investigation default's provider and model family.
+3. Keep stage roles in that family. Prefer the same exact model with lower effort
+   for bounded discovery, extraction, coverage classification, and
+   mechanical/editorial checks; next prefer a clearly related faster sibling from
+   the same provider and family.
+4. Use higher effort or the stronger sibling in that same family for difficult
+   conclusion-driving verification, conflict resolution, and synthesis.
+5. If family membership is unclear, stay on the same exact model or omit the
+   override. Do not assemble a sampler of unrelated providers or model families
+   merely to specialize each stage.
+6. Cross the family boundary only when the user directs it or the chosen family
+   lacks a required capability, such as vision for the one permitted Browser
+   escalation. Limit the exception to the affected role and disclose it.
+7. Pass only exact configured routes in workflow `args.routes`. If no safe
+   same-family alternate is clear, omit that role's override and inherit the
    configured agent-type default.
 
 Never guess a route. Do not copy a provider, model ID, or effort value into this
 skill or its resources. Routes are complete runtime values returned by the current
-session's discovery tool.
+session's discovery tool. A shared provider name alone does not establish a shared
+model family; use only an obvious lineage shown by runtime model names, and treat
+ambiguous cases as unrelated.
 
 Use read-only Investigation workers for ordinary research. A Browser worker is an
 exception for one approved acquisition escalation and requires a runtime-discovered

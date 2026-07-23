@@ -48,6 +48,20 @@ class DeepResearchSkillContractTests(unittest.TestCase):
         )
         self.assertIn("do not silently fall back", guide)
 
+    def test_prefers_same_model_family_for_stage_routes(self) -> None:
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        guide = (SKILL_ROOT / "references" / "gigacode-workflow.md").read_text(encoding="utf-8")
+        normalized_skill = " ".join(skill.split())
+        normalized_guide = " ".join(guide.split())
+
+        self.assertIn("anchor routing to the effective Investigation default", normalized_skill)
+        self.assertIn("same exact model with lower effort", normalized_skill)
+        self.assertIn("clearly related faster sibling", normalized_skill)
+        self.assertIn("Do not assemble a sampler of unrelated providers", normalized_skill)
+        self.assertIn("only when the user directs it", normalized_skill)
+        self.assertIn("Sharing a provider is not enough", normalized_guide)
+        self.assertIn("Keep a capability-driven exception to the affected role", normalized_guide)
+
 
 class FakeBudget:
     def __init__(self, total: int | None = None, spent_per_agent: int = 100) -> None:
