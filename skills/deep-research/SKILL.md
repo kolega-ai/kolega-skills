@@ -12,9 +12,11 @@ compatibility: >
   Requires web search and page-reading tools for live research. Best with Kolega
   Code Gigacode workflows and runtime model discovery; prompts to enable Gigacode
   before offering a bounded sequential fallback when orchestration is unavailable.
+  Uses a session scratchpad directory for evidence dossiers when one is available,
+  and falls back to compact in-result records when it is not.
 metadata:
   owner: Kolega
-  version: "2.1"
+  version: "3.0"
 ---
 
 # Deep Research
@@ -194,8 +196,24 @@ default:
 
 After a workflow run, immediately use
 [`scripts/materialize_report.py`](scripts/materialize_report.py) with its
-`resultPath`. Verify a nonempty title, body, and exactly one `## Sources` section.
-Finish with the report path and a short status; do not paste the full report again.
+`resultPath`. The materializer is the authoritative gate: it builds `## Sources`
+from the body, validates structure, appends a `## Scope and gaps` section for a
+partial result, and warns when the report is materially shorter than the confirmed
+target. Report any warning it prints. Finish with the report path and a short
+status; do not paste the full report again.
+
+### Keep intermediate work out of the project
+
+Research intermediates belong in the session scratchpad, not in the user's
+repository. When the session advertises a scratchpad directory, pass it to the
+workflow as `workspace.scratchpad_dir` with a short `run_slug`, so scouts can write
+full-fidelity evidence dossiers that later stages read on demand instead of
+squeezing everything through compact return values.
+
+The scratchpad holds dossiers, section drafts, and the assembled report body. The
+finished report is the only deliverable and it goes into the project. If no
+scratchpad is available, the workflow runs on its inline records instead — say so
+if evidence depth suffered.
 
 ## 2. Choose proportional effort
 
@@ -247,7 +265,9 @@ When Gigacode and model discovery are available:
    escalation. Limit the exception to the affected role and disclose it.
 7. Pass only exact configured routes in workflow `args.routes`. If no safe
    same-family alternate is clear, omit that role's override and inherit the
-   configured agent-type default.
+   configured agent-type default. An omitted role inherits silently; a route that
+   is present but malformed fails the run before dispatch rather than quietly
+   falling back.
 
 Never guess a route. Do not copy a provider, model ID, or effort value into this
 skill or its resources. Routes are complete runtime values returned by the current
@@ -263,9 +283,13 @@ vision-capable route when an override is used.
 
 With Gigacode:
 
-1. Read [`scripts/deep-research.workflow`](scripts/deep-research.workflow) verbatim.
-2. Pass it to `run_workflow` with the settled brief, disjoint lanes, tier, ceilings,
-   report profile, writing reserve, and optional runtime routes.
+1. Call `run_workflow` with `script_path` pointing at this skill's
+   [`scripts/deep-research.workflow`](scripts/deep-research.workflow). Do not read
+   the file into context to pass it as `script`; `script_path` takes precedence and
+   avoids a large pointless round trip.
+2. Pass the settled brief — including `current_as_of`, since workers have no clock —
+   plus disjoint lanes, tier, ceilings, report profile, stage plan, workspace, and
+   optional runtime routes.
 3. Use a tier-appropriate budget. Do not increase an exhausted budget by a large
    multiplier without changing scope or workflow shape.
 4. On interruption, inspect `resultPath` and `transcriptPath`. Resume only to reuse
@@ -273,13 +297,17 @@ With Gigacode:
    recover omitted inline output.
 5. Materialize the final or explicitly supported partial report from `resultPath`.
 
-The workflow researches lanes in bounded batches, verifies only important or
-disputed claims, constructs its registry and bibliography deterministically, and
-uses one ordinary drafting agent. The skill—not the user—decides whether section
-fan-out is warranted after coverage analysis. It uses sections for an explicitly
-long report, usually around 5,000 words or more, or when the supported evidence
-separates into genuinely independent sections that benefit from bounded parallel
-drafting. A synthesis pass then unifies argument, transitions, voice, and citations.
+The workflow researches and verifies lanes as one pipeline with no barrier between
+the stages, verifies every lane that holds important or disputed claims, constructs
+its registry deterministically, and uses one ordinary drafting agent. The
+skill—not the user—decides whether section fan-out is warranted after coverage
+analysis. It uses sections for an explicitly long report, usually around 5,000 words
+or more, or when the supported evidence separates into genuinely independent
+sections that benefit from bounded parallel drafting. An assembly pass then unifies
+argument, transitions, voice, and citations.
+
+A `failed` result means no report exists. A drafted report with residual issues
+comes back as `partial` with those issues in `gaps` — never discarded.
 
 ### Sequential fallback
 
@@ -290,12 +318,16 @@ before proceeding.
 If Gigacode is unavailable and the user chooses to continue without it:
 
 1. Research the same 2–6 disjoint lanes sequentially with the same ceilings.
-2. Keep one compact source/evidence registry and failed-acquisition ledger.
-3. Verify only conclusion-driving or disputed claims with genuinely independent
-   support.
+2. Keep the source/evidence registry and failed-acquisition ledger **in scratchpad
+   files**, not in conversation context, using the same layout the workflow uses:
+   `lanes/<lane>.md` per lane plus a `registry.json`. A long sequential run will
+   outlive its own context; citations must survive compaction.
+3. Verify conclusion-driving or disputed claims with genuinely independent support.
 4. Run one combined evidence/editorial audit for Focused or Standard work.
 5. Revise only if the audit finds a material problem.
-6. Construct `## Sources` from URLs actually cited in the final body.
+6. Rebuild `## Sources` from the files, restricted to URLs actually cited in the
+   final body. Preserve query strings when comparing URLs: two pages that differ
+   only in a query parameter are different documents.
 7. Write the report directly using the artifact-first path rules.
 
 Orchestration improves speed and cost control; its absence must not weaken the
@@ -349,8 +381,16 @@ ask the user to choose single-agent versus section-based drafting.
 
 ## 8. Audit only what needs judgment
 
-- Focused and ordinary Standard: one combined evidence/editorial audit.
-- Extended or high-stakes: two independent audits are allowed.
+- Focused and ordinary Standard: one combined evidence/editorial audit — pass
+  `stage_plan.audit: "combined"`.
+- Extended or high-stakes: two independent audits — pass
+  `stage_plan.audit: "dual"`. This does not happen by default; set it explicitly.
+- Use `stage_plan.audit: "deterministic"` only when no judgment-based audit is
+  warranted.
+- Set `stage_plan.verification` and `stage_plan.followup` in the same object:
+  `risk_only` verification for experiential or testimony-led work, `selective` for
+  ordinary reports, `required` when nearly every lane carries checkable
+  conclusions; `followup: "off"` for Focused runs.
 - Revise only for material issues.
 - Use an independent closure review only for unresolved critical or major evidence
   issues in high-stakes work.

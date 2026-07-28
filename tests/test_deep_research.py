@@ -31,6 +31,72 @@ def load_materializer() -> Any:
 MATERIALIZER = load_materializer()
 
 
+def load_workflow_helpers() -> dict[str, Any]:
+    """Execute only the workflow's module-level helpers, outside the async wrapper."""
+    source = WORKFLOW_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = {
+        "canonical_url",
+        "strip_fenced_code",
+        "strip_inline_code",
+        "matching_bracket",
+        "link_destination",
+        "markdown_urls",
+        "strip_sources",
+        "structural_issues",
+        "slugify",
+    }
+    body: list[ast.stmt] = [
+        node
+        for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name in wanted)
+        or (
+            isinstance(node, ast.Assign)
+            and any(getattr(target, "id", "") == "TRACKING_PARAMS" for target in node.targets)
+        )
+    ]
+    module = ast.Module(body=body, type_ignores=[])
+    ast.fix_missing_locations(module)
+    namespace: dict[str, Any] = {}
+    exec(compile(module, str(WORKFLOW_PATH), "exec"), namespace)  # noqa: S102
+    return namespace
+
+
+WORKFLOW_HELPERS = load_workflow_helpers()
+
+# Shared corpus for the workflow/materializer parity contract.
+LINK_FIXTURES = [
+    "[Saturn](https://en.wikipedia.org/wiki/Saturn_(mythology)) shaped the tradition.",
+    "[Spec](https://example.com/doc \"The Title\") and [b](https://example.com/b 't')",
+    "![diagram](https://example.com/img.png) beside [text](https://example.com/a)",
+    "inline `[a](b)` plus [real](https://example.com/real)",
+    "[reference style][1] and [inline](https://example.com/ok)",
+    "[angle](<https://example.com/ok2>) end",
+    "[anchor](#part) [mail](mailto:a@b.c) [rel](./x.md) [plain](http://example.com/h)",
+    "```\n[fenced](https://example.com/no)\n```\n[after](https://example.com/yes)",
+    "~~~text\n[tilde](https://example.com/no2)\n~~~\n[y](https://example.com/y2)",
+    "[nested [brackets] label](https://example.com/n)",
+    "[trailing parens](https://example.com/a(b)c) tail",
+    "no links at all",
+    "",
+]
+URL_FIXTURES = [
+    "https://www.jstor.org/stable/2860993?seq=3",
+    "https://www.jstor.org/stable/2860993?seq=41",
+    "https://example.gov/data?report=2019",
+    "https://example.gov/data?report=2024",
+    "https://Example.COM/Path/",
+    "https://example.com/p?utm_source=x&utm_medium=y&id=7",
+    "https://example.com/p?id=7",
+    "https://example.com/p?b=2&a=1",
+    "https://example.com/p?a=1&b=2",
+    "https://example.com/x#fragment",
+    "HTTPS://EXAMPLE.com/A?ref=twitter",
+    "https://example.com",
+    "",
+]
+
+
 # ---------------------------------------------------------------------------
 # Scout / verifier helper factories for custom claim scenarios
 # ---------------------------------------------------------------------------
@@ -243,6 +309,12 @@ class FakeWorkflowHarness:
         default_claim_type: str | None = None,
         scout_overrides: dict[str, dict[str, Any]] | None = None,
         verifier_overrides: dict[str, dict[str, Any]] | None = None,
+        section_word_count: int = 900,
+        assembled_word_counts: list[int] | None = None,
+        audit_material_issues: list[str] | None = None,
+        revision_remaining_issues: list[str] | None = None,
+        omit_dossier_paths: bool = False,
+        omit_section_paths: bool = False,
     ) -> None:
         self.args = args
         self.followup_needed = followup_needed
@@ -252,8 +324,40 @@ class FakeWorkflowHarness:
         self.default_claim_type = default_claim_type
         self.scout_overrides = scout_overrides or {}
         self.verifier_overrides = verifier_overrides or {}
+        self.section_word_count = section_word_count
+        self.assembled_word_counts = list(assembled_word_counts or [])
+        self.audit_material_issues = list(audit_material_issues or [])
+        self.revision_remaining_issues = list(revision_remaining_issues or [])
+        self.omit_dossier_paths = omit_dossier_paths
+        self.omit_section_paths = omit_section_paths
         self.calls: list[dict[str, Any]] = []
         self.phases: list[str] = []
+
+    # -- scratchpad helpers -------------------------------------------------
+    def workspace_root(self) -> str:
+        workspace = self.args.get("workspace")
+        if not isinstance(workspace, dict):
+            return ""
+        directory = str(workspace.get("scratchpad_dir", "")).rstrip("/")
+        slug = str(workspace.get("run_slug", ""))
+        if not directory or not slug:
+            return ""
+        return f"{directory}/deep-research/{slug}"
+
+    @staticmethod
+    def _path_from_prompt(prompt: str, marker: str) -> str:
+        index = prompt.find(marker)
+        if index < 0:
+            return ""
+        return prompt[index:].split()[0].rstrip(",.")
+
+    def _next_assembled_word_count(self) -> int:
+        if not self.assembled_word_counts:
+            target = self.args.get("report_profile", {}).get("target_words", 3_000)
+            return int(target)
+        if len(self.assembled_word_counts) == 1:
+            return self.assembled_word_counts[0]
+        return self.assembled_word_counts.pop(0)
 
     async def agent(self, prompt: str, **options: Any) -> dict[str, Any] | None:
         label = options.get("label", "")
@@ -261,14 +365,20 @@ class FakeWorkflowHarness:
         self.budget.charge()
         if label in self.fail_labels:
             return None
+        root = self.workspace_root()
 
         if label.startswith("scout:") or label == "followup:scout":
             lane_id = label.split(":", 1)[1]
-            if lane_id in self.scout_overrides:
-                return self.scout_overrides[lane_id]
-            return self._scout(lane_id)
+            scout = self.scout_overrides.get(lane_id) or self._scout(lane_id)
+            if root and not self.omit_dossier_paths:
+                scout = dict(scout)
+                scout["dossier_path"] = self._path_from_prompt(prompt, f"{root}/lanes/")
+            return scout
         if label.startswith("escalation:"):
-            return self._scout("acquisition-escalation")
+            scout = self._scout("acquisition-escalation")
+            if root and not self.omit_dossier_paths:
+                scout["dossier_path"] = self._path_from_prompt(prompt, f"{root}/lanes/")
+            return scout
         if label.startswith("verify:") or label == "followup:verify":
             lane_id = label.split(":", 1)[1]
             if lane_id in self.verifier_overrides:
@@ -315,15 +425,34 @@ class FakeWorkflowHarness:
                     else []
                 ),
             }
-        if label.startswith("section-draft:"):
+        if label.startswith("section-draft:") or label.startswith("section-expand:"):
             section_number = label.rsplit(":", 1)[1]
             lane_id = f"lane-{section_number}"
+            url = f"https://example.test/{lane_id}"
+            if root:
+                expanding = label.startswith("section-expand:")
+                path = self._path_from_prompt(prompt, f"{root}/sections/")
+                return {
+                    "heading": f"Movement {section_number}",
+                    "section_path": "" if self.omit_section_paths else path,
+                    "word_count": self.section_word_count * (2 if expanding else 1),
+                    "cited_urls": [url],
+                    "used_claim_ids": [f"{lane_id}/C1"],
+                    "gaps": [],
+                }
             return {
                 "heading": f"Movement {section_number}",
-                "body_markdown": (
-                    f"A section supported by a [primary source](https://example.test/{lane_id})."
-                ),
+                "body_markdown": f"A section supported by a [primary source]({url}).",
                 "used_claim_ids": [f"{lane_id}/C1"],
+                "gaps": [],
+            }
+        if label.startswith("draft-assembly") and root:
+            first_lane = self.args["lanes"][0]["id"]
+            return {
+                "title": "A Long, Unified Report",
+                "body_path": self._path_from_prompt(prompt, f"{root}/report/"),
+                "assembled_word_count": self._next_assembled_word_count(),
+                "cited_urls": [f"https://example.test/{first_lane}"],
                 "gaps": [],
             }
         if label == "draft-assembly":
@@ -355,10 +484,17 @@ class FakeWorkflowHarness:
             }
         if label.startswith("audit:"):
             return {
-                "revision_needed": False,
-                "material_issues": [],
+                "revision_needed": bool(self.audit_material_issues),
+                "material_issues": list(self.audit_material_issues),
                 "minor_issues": [],
                 "summary": "No material issue.",
+            }
+        if label == "revision" and root:
+            return {
+                "title": "A Long, Unified Report",
+                "body_path": self._path_from_prompt(prompt, f"{root}/report/"),
+                "assembled_word_count": self._next_assembled_word_count(),
+                "remaining_material_issues": list(self.revision_remaining_issues),
             }
         if label == "revision":
             first_lane = self.args["lanes"][0]["id"]
@@ -369,7 +505,7 @@ class FakeWorkflowHarness:
                     f"The revised answer cites a [primary source]({url}).\n\n"
                     "## What changed\n\nThe supported conclusion remains."
                 ),
-                "remaining_material_issues": [],
+                "remaining_material_issues": list(self.revision_remaining_issues),
             }
         if label == "closure":
             return {"supported": True, "unresolved_material_issues": []}
@@ -462,7 +598,8 @@ def workflow_args(
     tier: str = "standard",
     *,
     route: bool = False,
-    writing_reserve_tokens: int = 1_000,
+    writing_reserve_tokens: int | None = None,
+    workspace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts = {"focused": 2, "standard": 3, "extended": 5}
     ceilings = {
@@ -471,6 +608,7 @@ def workflow_args(
         "extended": (8, 12),
     }
     searches, fetches = ceilings[tier]
+    payload: dict[str, Any]
     routes: dict[str, Any] = {}
     if route:
         routes = {
@@ -481,7 +619,7 @@ def workflow_args(
             }
             for role in ("discovery", "verification", "synthesis", "audit")
         }
-    return {
+    payload = {
         "intake": {
             "mode": "interactive",
             "confirmed": True,
@@ -492,6 +630,7 @@ def workflow_args(
             "question": "What does the evidence support?",
             "audience": "General readers",
             "scope": "A bounded test",
+            "current_as_of": "2026-07-28",
             "high_stakes": False,
         },
         "tier": tier,
@@ -518,12 +657,101 @@ def workflow_args(
             "required_structure": [],
             "avoid_structure": ["Executive answer", "Methods", "Limitations"],
         },
-        "writing_reserve_tokens": writing_reserve_tokens,
-        "research_batch_size": 2,
         "allow_acquisition_escalation": False,
         "escalation": None,
         "routes": routes,
     }
+    if writing_reserve_tokens is not None:
+        payload["writing_reserve_tokens"] = writing_reserve_tokens
+    if workspace is not None:
+        payload["workspace"] = workspace
+    return payload
+
+
+def scratchpad_workspace(run_slug: str = "bounded-test") -> dict[str, str]:
+    """A valid workspace argument pointing at an absolute scratchpad path."""
+    return {"scratchpad_dir": "/tmp/kolega-scratchpad-fixture", "run_slug": run_slug}
+
+
+# Mirrors the curated __builtins__ in kolega-code's workflow executor. Running the
+# workflow under this mapping catches any reliance on a builtin the real sandbox
+# withholds (import, open, eval, and the time/random surface are all absent).
+SANDBOX_BUILTIN_NAMES = (
+    "abs",
+    "all",
+    "any",
+    "ascii",
+    "bin",
+    "bool",
+    "bytearray",
+    "bytes",
+    "callable",
+    "chr",
+    "dict",
+    "divmod",
+    "enumerate",
+    "filter",
+    "float",
+    "format",
+    "frozenset",
+    "getattr",
+    "hasattr",
+    "hash",
+    "hex",
+    "int",
+    "isinstance",
+    "issubclass",
+    "iter",
+    "len",
+    "list",
+    "map",
+    "max",
+    "min",
+    "next",
+    "oct",
+    "ord",
+    "pow",
+    "range",
+    "repr",
+    "reversed",
+    "round",
+    "set",
+    "setattr",
+    "slice",
+    "sorted",
+    "str",
+    "sum",
+    "tuple",
+    "type",
+    "zip",
+    "Exception",
+    "ValueError",
+    "KeyError",
+    "IndexError",
+    "TypeError",
+    "RuntimeError",
+    "StopIteration",
+    "StopAsyncIteration",
+    "ArithmeticError",
+    "ZeroDivisionError",
+    "AttributeError",
+    "NotImplementedError",
+    "AssertionError",
+    "__build_class__",
+)
+
+
+def sandbox_builtins() -> dict[str, Any]:
+    """The restricted builtins mapping the workflow must run under."""
+    import builtins
+
+    table: dict[str, Any] = {
+        name: getattr(builtins, name) for name in SANDBOX_BUILTIN_NAMES if hasattr(builtins, name)
+    }
+    table["True"] = True
+    table["False"] = False
+    table["None"] = None
+    return table
 
 
 async def execute_workflow(harness: FakeWorkflowHarness) -> dict[str, Any]:
@@ -546,6 +774,7 @@ async def execute_workflow(harness: FakeWorkflowHarness) -> dict[str, Any]:
     module = ast.Module(body=[function], type_ignores=[])
     ast.fix_missing_locations(module)
     namespace = {
+        "__builtins__": sandbox_builtins(),
         "args": harness.args,
         "agent": harness.agent,
         "parallel": harness.parallel,
@@ -588,9 +817,8 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         self.assertNotRegex(shipped_text, r'"model"\s*:\s*"[A-Za-z0-9]')
 
     def test_standard_run_is_bounded_and_routes_by_stage(self) -> None:
-        # Default stage_plan: selective + thesis_changing + combined
-        # selective/standard cap = 2, with one call reserved for a possible
-        # thesis-changing follow-up.
+        # Default stage_plan: selective + thesis_changing + combined. Every lane
+        # holding eligible claims is verified; no capacity is held back.
         args = workflow_args(route=True)
         harness = FakeWorkflowHarness(args)
         result = asyncio.run(execute_workflow(harness))
@@ -603,10 +831,9 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         scout_calls = [call for call in harness.calls if call["label"].startswith("scout:")]
         verify_calls = [call for call in harness.calls if call["label"].startswith("verify:")]
         self.assertEqual(len(scout_calls), 3)
-        # One main lane is verified; the second call remains available to the
-        # conditional follow-up.
-        self.assertEqual(len(verify_calls), 1)
-        self.assertLessEqual(len(harness.calls), 9)
+        self.assertEqual(len(verify_calls), 3)
+        self.assertEqual(result["run_summary"]["deferred_claims"], 0)
+        self.assertLessEqual(len(harness.calls), 11)
         self.assertTrue(
             all(
                 call.get("model_override") == args["routes"]["discovery"]
@@ -616,7 +843,8 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(result["report_markdown"].count("\n## Sources\n"), 1)
         self.assertEqual(len(result["cited_sources"]), 1)
-        # Failed URL from lane-1 scout appears in the verification prompts
+        self.assertEqual(len(result["source_registry"]), 3)
+        # Each lane's own failed URL reaches its verifier prompt.
         self.assertIn("https://blocked.test/lane-1", self._verification_prompts(harness))
         self.assertIn("Do not retry any terminal URL", self._verification_prompts(harness))
 
@@ -681,20 +909,23 @@ class DeepResearchWorkflowTests(unittest.TestCase):
             1,
         )
 
-    def test_selective_standard_reserves_one_verifier_call_for_followup(self) -> None:
-        args = workflow_args()
-        harness = FakeWorkflowHarness(args, followup_needed=True)
-        result = asyncio.run(execute_workflow(harness))
+    def test_no_verifier_capacity_is_reserved_before_coverage(self) -> None:
+        """Every eligible lane is verified whether or not a follow-up happens."""
+        without_followup = FakeWorkflowHarness(workflow_args(), followup_needed=False)
+        asyncio.run(execute_workflow(without_followup))
+        with_followup = FakeWorkflowHarness(workflow_args(), followup_needed=True)
+        followup_result = asyncio.run(execute_workflow(with_followup))
 
-        main_verify_calls = [call for call in harness.calls if call["label"].startswith("verify:")]
-        self.assertEqual(len(main_verify_calls), 1)
-        self.assertEqual(
-            [call["label"] for call in harness.calls].count("followup:verify"),
-            1,
-        )
-        self.assertEqual(result["run_summary"]["verifier_calls"], 2)
+        def main_verifies(harness: FakeWorkflowHarness) -> int:
+            return len([c for c in harness.calls if c["label"].startswith("verify:lane-")])
 
-    def test_selective_escalation_cannot_consume_reserved_followup_verifier(self) -> None:
+        self.assertEqual(main_verifies(without_followup), 3)
+        self.assertEqual(main_verifies(with_followup), 3)
+        self.assertIn("followup:verify", [c["label"] for c in with_followup.calls])
+        self.assertEqual(followup_result["run_summary"]["verifier_calls"], 4)
+        self.assertEqual(followup_result["run_summary"]["deferred_claims"], 0)
+
+    def test_escalation_is_verified_alongside_the_followup(self) -> None:
         args = workflow_args()
         args["brief"]["high_stakes"] = True
         args["allow_acquisition_escalation"] = True
@@ -708,19 +939,51 @@ class DeepResearchWorkflowTests(unittest.TestCase):
 
         labels = [call["label"] for call in harness.calls]
         self.assertIn("escalation:local", labels)
-        self.assertNotIn("verify:acquisition-escalation", labels)
+        self.assertIn("verify:acquisition-escalation", labels)
         self.assertIn("followup:verify", labels)
-        self.assertEqual(result["run_summary"]["verifier_calls"], 2)
+        # Three lanes, the escalation, and the follow-up are each verified once.
+        self.assertEqual(result["run_summary"]["verifier_calls"], 5)
 
     def test_writing_reserve_suppresses_followup(self) -> None:
-        args = workflow_args(writing_reserve_tokens=9_000)
-        budget = FakeBudget(total=10_000, spent_per_agent=100)
+        # The reserve floor for a 3,000-word target is 18,000 tokens; a budget
+        # only slightly above it admits research but not optional follow-up work.
+        args = workflow_args(writing_reserve_tokens=18_000)
+        budget = FakeBudget(total=18_900, spent_per_agent=100)
         harness = FakeWorkflowHarness(args, followup_needed=True, budget=budget)
         result = asyncio.run(execute_workflow(harness))
 
         self.assertEqual(result["run_summary"]["base_lanes_completed"], 3)
         self.assertEqual(result["run_summary"]["followups_run"], 0)
         self.assertFalse(any(call["label"].startswith("followup:") for call in harness.calls))
+
+    def test_exhausted_reserve_stops_before_any_worker(self) -> None:
+        args = workflow_args(writing_reserve_tokens=18_000)
+        budget = FakeBudget(total=18_000, spent_per_agent=100)
+        harness = FakeWorkflowHarness(args, budget=budget)
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(harness.calls)
+        self.assertTrue(
+            any("research did not start" in gap for gap in result["gaps"]), result["gaps"]
+        )
+        # Lanes that never ran are not reported as failed workers.
+        self.assertFalse(any("research worker failed" in gap for gap in result["gaps"]))
+
+    def test_writing_reserve_floor_scales_with_target_length(self) -> None:
+        args = workflow_args()
+        args["report_profile"]["length"] = "long"
+        args["report_profile"]["target_words"] = 12_000
+        args["writing_reserve_tokens"] = 18_000
+        harness = FakeWorkflowHarness(args)
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(harness.calls)
+        self.assertTrue(
+            any("writing_reserve_tokens must be at least 33600" in gap for gap in result["gaps"]),
+            result["gaps"],
+        )
 
     def test_failed_worker_produces_supported_partial_and_none_is_filtered(self) -> None:
         args = workflow_args()
@@ -763,12 +1026,12 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         args["intake"]["resolved_fields"].remove("delivery")
         invalid_cases.append(("missing core field", args, "intake.resolved_fields"))
 
-        for count in (0, 4, True):
+        for count in (-1, True, "two"):
             args = workflow_args()
             args["intake"]["topic_questions_asked"] = count
             invalid_cases.append(
                 (
-                    f"invalid interactive topic count {count!r}",
+                    f"invalid topic count {count!r}",
                     args,
                     "intake.topic_questions_asked",
                 )
@@ -781,6 +1044,16 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         args = workflow_args()
         args["brief"]["scope"] = ""
         invalid_cases.append(("missing scope", args, "brief.scope is required"))
+
+        args = workflow_args()
+        args["brief"].pop("current_as_of")
+        invalid_cases.append(("missing as-of date", args, "brief.current_as_of is required"))
+
+        args = workflow_args()
+        args["research_batch_size"] = 2
+        invalid_cases.append(
+            ("legacy batch size", args, "research_batch_size is no longer supported")
+        )
 
         args = workflow_args()
         args["report_profile"].pop("length")
@@ -801,6 +1074,18 @@ class DeepResearchWorkflowTests(unittest.TestCase):
                     any(expected_gap in gap for gap in result["gaps"]),
                     result["gaps"],
                 )
+
+    def test_topic_question_count_is_telemetry_not_a_gate(self) -> None:
+        """A caller-asserted question count never aborts an otherwise valid run."""
+        for count in (0, 7):
+            with self.subTest(count=count):
+                args = workflow_args()
+                args["intake"]["topic_questions_asked"] = count
+                harness = FakeWorkflowHarness(args)
+                result = asyncio.run(execute_workflow(harness))
+
+                self.assertEqual(result["status"], "complete")
+                self.assertEqual(result["run_summary"]["topic_questions_asked"], count)
 
     def test_length_presets_and_custom_targets_are_enforced(self) -> None:
         valid_lengths = [
@@ -917,8 +1202,8 @@ class DeepResearchWorkflowTests(unittest.TestCase):
     # -----------------------------------------------------------------------
 
     def test_selective_only_eligible_lane_gets_verifier(self) -> None:
-        """Lane-3 (causal) is the only one eligible under selective; lanes 1 & 2
-        (attributed_report) are skipped as having no eligible claims."""
+        """Lane-3 (causal) is the only one eligible under selective; lanes 1 & 2 hold
+        background testimony and are skipped as having no eligible claims."""
         args = workflow_args("standard")  # 3 lanes
         args["stage_plan"] = {
             "verification": "selective",
@@ -927,8 +1212,15 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         }
         harness = FakeWorkflowHarness(
             args,
-            default_claim_type="attributed_report",
-            scout_overrides={"lane-3": _make_scout("lane-3", claim_type="causal")},
+            scout_overrides={
+                "lane-1": _make_scout(
+                    "lane-1", claim_type="attributed_report", importance="background"
+                ),
+                "lane-2": _make_scout(
+                    "lane-2", claim_type="attributed_report", importance="background"
+                ),
+                "lane-3": _make_scout("lane-3", claim_type="causal"),
+            },
         )
         result = asyncio.run(execute_workflow(harness))
 
@@ -944,7 +1236,7 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         self.assertEqual(len(audit_calls), 0)
         self.assertIn("Audit", result["run_summary"]["stages_skipped"])
         self.assertNotIn("Audit", result["run_summary"]["stages_run"])
-        # Report is still generated from direct + supported claims
+        # The report still draws on attributed and single-source claims.
         self.assertGreater(len(result["report_markdown"]), 50)
 
     # -----------------------------------------------------------------------
@@ -952,14 +1244,22 @@ class DeepResearchWorkflowTests(unittest.TestCase):
     # -----------------------------------------------------------------------
 
     def test_no_eligible_claims_suppresses_all_verifiers(self) -> None:
-        """All lanes have attributed_report claims → zero eligible → zero verifiers."""
+        """Background testimony in every lane → zero eligible → zero verifiers."""
         args = workflow_args()
         args["stage_plan"] = {
             "verification": "selective",
             "followup": "off",
             "audit": "deterministic",
         }
-        harness = FakeWorkflowHarness(args, default_claim_type="attributed_report")
+        harness = FakeWorkflowHarness(
+            args,
+            scout_overrides={
+                f"lane-{index}": _make_scout(
+                    f"lane-{index}", claim_type="attributed_report", importance="background"
+                )
+                for index in (1, 2, 3)
+            },
+        )
         result = asyncio.run(execute_workflow(harness))
 
         verify_calls = [c for c in harness.calls if c["label"].startswith("verify:")]
@@ -968,8 +1268,10 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         self.assertEqual(result["run_summary"]["selected_claims"], 0)
         self.assertNotIn("Verify", result["run_summary"]["stages_run"])
         self.assertIn("Verify", result["run_summary"]["stages_skipped"])
-        # Report is still generated from direct-status claims
+        # Testimony claims remain citable as attributed material.
         self.assertGreater(len(result["report_markdown"]), 50)
+        draft_prompt = next(c["prompt"] for c in harness.calls if c["label"] == "draft")
+        self.assertIn("'status': 'attributed'", draft_prompt)
 
     # -----------------------------------------------------------------------
     # Acceptance scenario 4: verifier failure / empty / partial
@@ -1027,7 +1329,7 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         self.assertGreaterEqual(result["run_summary"]["verifier_calls"], 1)
         draft_prompt = next(c["prompt"] for c in harness.calls if c["label"] == "draft")
         lane_claim = draft_prompt.index("'id': 'lane-1/C1'")
-        self.assertIn("'status': 'unresolved'", draft_prompt[lane_claim : lane_claim + 300])
+        self.assertIn("'status': 'unverified'", draft_prompt[lane_claim : lane_claim + 300])
 
     def test_verifier_sources_require_same_claim_approved_evidence(self) -> None:
         args = workflow_args()
@@ -1136,13 +1438,14 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         }
         harness = FakeWorkflowHarness(
             args,
-            default_claim_type="attributed_report",
             scout_overrides={
-                "lane-2": _make_scout(
-                    "lane-2",
-                    claim_type="causal",
-                    importance="supporting",
-                )
+                "lane-1": _make_scout(
+                    "lane-1", claim_type="attributed_report", importance="background"
+                ),
+                "lane-2": _make_scout("lane-2", claim_type="causal", importance="supporting"),
+                "lane-3": _make_scout(
+                    "lane-3", claim_type="attributed_report", importance="background"
+                ),
             },
         )
         result = asyncio.run(execute_workflow(harness))
@@ -1351,17 +1654,23 @@ class DeepResearchWorkflowTests(unittest.TestCase):
             "followups_run",
             "escalations_run",
             "draft_mode",
+            "topic_questions_asked",
+            "target_words",
+            "assembled_word_count",
+            "expansion_passes",
+            "dossiers",
+            "workspace_enabled",
         ):
             self.assertIn(key, rs, f"missing telemetry key: {key}")
 
-        # All 3 legacy claims are eligible for selective (conclusion-driving)
+        # All 3 legacy claims are eligible for selective (conclusion-driving) and
+        # every eligible lane is verified — nothing is deferred by a global cap.
         self.assertEqual(rs["eligible_claims"], 3)
-        # One main-lane slot is available and two eligible lanes are deferred.
-        self.assertEqual(rs["selected_claims"], 1)
-        self.assertEqual(rs["deferred_claims"], 2)
-        self.assertEqual(rs["verifier_calls"], 1)
+        self.assertEqual(rs["selected_claims"], 3)
+        self.assertEqual(rs["deferred_claims"], 0)
+        self.assertEqual(rs["verifier_calls"], 3)
         self.assertEqual(rs["lanes_skipped_no_eligible"], 0)
-        self.assertEqual(rs["verifier_verdict_counts"].get("supported", 0), 1)
+        self.assertEqual(rs["verifier_verdict_counts"].get("supported", 0), 3)
         # Stage tracking
         self.assertIn("Research", rs["stages_run"])
         self.assertIn("Verify", rs["stages_run"])
@@ -1388,6 +1697,538 @@ class DeepResearchWorkflowTests(unittest.TestCase):
         )
 
 
+class DeterministicHelperParityTests(unittest.TestCase):
+    """The workflow's in-sandbox copies must not drift from the authoritative ones."""
+
+    def test_link_extraction_matches_between_implementations(self) -> None:
+        for fixture in LINK_FIXTURES:
+            with self.subTest(fixture=fixture[:40]):
+                self.assertEqual(
+                    WORKFLOW_HELPERS["markdown_urls"](fixture),
+                    MATERIALIZER.markdown_urls(fixture),
+                )
+
+    def test_url_identity_matches_between_implementations(self) -> None:
+        for fixture in URL_FIXTURES:
+            with self.subTest(fixture=fixture):
+                self.assertEqual(
+                    WORKFLOW_HELPERS["canonical_url"](fixture),
+                    MATERIALIZER.canonical_url(fixture),
+                )
+
+    def test_link_edge_cases_resolve_correctly(self) -> None:
+        extract = MATERIALIZER.markdown_urls
+        # Balanced parentheses survive: the flagship Wikipedia case.
+        self.assertEqual(
+            extract("[Saturn](https://en.wikipedia.org/wiki/Saturn_(mythology)) x"),
+            ["https://en.wikipedia.org/wiki/Saturn_(mythology)"],
+        )
+        # An optional title is not part of the destination.
+        self.assertEqual(
+            extract('[Spec](https://example.com/doc "Title")'),
+            ["https://example.com/doc"],
+        )
+        # Images, inline code, fenced blocks, and reference links are not citations.
+        self.assertEqual(extract("![i](https://example.com/img.png)"), [])
+        self.assertEqual(extract("`[a](https://example.com/no)`"), [])
+        self.assertEqual(extract("```\n[a](https://example.com/no)\n```"), [])
+        self.assertEqual(extract("[label][ref]"), [])
+        # Anchors, mail links, and relative paths are ignored, not "unknown".
+        self.assertEqual(extract("[a](#x) [b](mailto:a@b.c) [c](./d.md)"), [])
+
+    def test_url_identity_preserves_meaningful_query_parameters(self) -> None:
+        canonical = MATERIALIZER.canonical_url
+        self.assertNotEqual(
+            canonical("https://example.gov/data?report=2019"),
+            canonical("https://example.gov/data?report=2024"),
+        )
+        self.assertNotEqual(
+            canonical("https://www.jstor.org/stable/2860993?seq=3"),
+            canonical("https://www.jstor.org/stable/2860993?seq=41"),
+        )
+        # Tracking-only differences and parameter order collapse.
+        self.assertEqual(
+            canonical("https://example.com/p?utm_source=x&id=7"),
+            canonical("https://example.com/p?id=7"),
+        )
+        self.assertEqual(
+            canonical("https://example.com/p?b=2&a=1"),
+            canonical("https://example.com/p?a=1&b=2"),
+        )
+        self.assertEqual(
+            canonical("https://Example.COM/Path/"),
+            canonical("https://example.com/Path"),
+        )
+
+    def test_registry_keeps_query_distinct_sources_apart(self) -> None:
+        """Two query-differentiated sources must not collapse into one registry card."""
+        args = workflow_args()
+        overrides = {}
+        for index, year in ((1, "2019"), (2, "2024")):
+            scout = _make_scout(f"lane-{index}")
+            scout["sources"][0]["url"] = f"https://example.gov/data?report={year}"
+            scout["sources"][0]["title"] = f"Report {year}"
+            overrides[f"lane-{index}"] = scout
+        harness = FakeWorkflowHarness(args, scout_overrides=overrides)
+        result = asyncio.run(execute_workflow(harness))
+
+        urls = sorted(source["url"] for source in result["source_registry"])
+        self.assertIn("https://example.gov/data?report=2019", urls)
+        self.assertIn("https://example.gov/data?report=2024", urls)
+
+
+class ReportPreservationTests(unittest.TestCase):
+    """A drafted report is never discarded for a residual defect."""
+
+    def test_residual_material_issue_returns_partial_with_the_report(self) -> None:
+        args = workflow_args()
+        harness = FakeWorkflowHarness(
+            args,
+            audit_material_issues=["a material claim is unsupported"],
+            revision_remaining_issues=["the gap could not be closed from evidence"],
+        )
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["status"], "partial")
+        self.assertGreater(len(result["report_markdown"]), 50)
+        self.assertEqual(result["report_markdown"].count("\n## Sources\n"), 1)
+        self.assertIn("the gap could not be closed from evidence", result["gaps"])
+        self.assertIn("Revise", result["run_summary"]["stages_run"])
+
+    def test_unknown_citation_url_does_not_discard_the_report(self) -> None:
+        args = workflow_args()
+        harness = FakeWorkflowHarness(
+            args,
+            audit_material_issues=["citation cannot be resolved"],
+            revision_remaining_issues=["unknown citation URL remains"],
+        )
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertNotEqual(result["status"], "failed")
+        self.assertTrue(result["report_markdown"].startswith("# "))
+
+    def test_failed_only_when_no_report_exists(self) -> None:
+        with self.subTest(case="drafting worker fails"):
+            harness = FakeWorkflowHarness(workflow_args(), fail_labels={"draft"})
+            result = asyncio.run(execute_workflow(harness))
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["report_markdown"], "")
+            self.assertIn("drafting worker failed", result["gaps"])
+
+        with self.subTest(case="every claim refuted"):
+            args = workflow_args()
+            refuted = {
+                "lane_id": "lane",
+                "summary": "Nothing survived verification.",
+                "verdicts": [
+                    {
+                        "claim_id": "C1",
+                        "status": "unsupported",
+                        "approved_evidence_ids": ["E1"],
+                        "qualification": "",
+                    }
+                ],
+                "rejected_evidence_ids": [],
+                "new_sources": [],
+                "new_evidence": [],
+                "new_failures": [],
+                "gaps": [],
+            }
+            harness = FakeWorkflowHarness(
+                args,
+                verifier_overrides={f"lane-{index}": dict(refuted) for index in (1, 2, 3)},
+            )
+            result = asyncio.run(execute_workflow(harness))
+            self.assertEqual(result["status"], "failed")
+            self.assertTrue(
+                any("no supported claim set" in gap for gap in result["gaps"]), result["gaps"]
+            )
+
+    def test_status_matrix_governs_claim_use(self) -> None:
+        args = workflow_args()
+        harness = FakeWorkflowHarness(args)
+        asyncio.run(execute_workflow(harness))
+        draft_prompt = next(c["prompt"] for c in harness.calls if c["label"] == "draft")
+
+        self.assertIn("verified – independently checked", draft_prompt)
+        self.assertIn("unverified – not independently checked", draft_prompt)
+        self.assertIn("not describe it as independently corroborated", draft_prompt)
+        # The retired vocabulary is gone.
+        self.assertNotIn("direct – cite and attribute", draft_prompt)
+        self.assertNotIn("deferred", draft_prompt)
+
+
+class ClaimTypeEligibilityTests(unittest.TestCase):
+    """A self-reported claim type can never switch verification off."""
+
+    def test_unrecognized_claim_types_still_get_verified(self) -> None:
+        for claim_type in ("statistical", "numeric_fact", "QUANTITATIVE", "Quantitative"):
+            with self.subTest(claim_type=claim_type):
+                args = workflow_args()
+                overrides = {
+                    f"lane-{index}": _make_scout(
+                        f"lane-{index}", claim_type=claim_type, disputed=True
+                    )
+                    for index in (1, 2, 3)
+                }
+                harness = FakeWorkflowHarness(args, scout_overrides=overrides)
+                result = asyncio.run(execute_workflow(harness))
+
+                self.assertEqual(result["run_summary"]["eligible_claims"], 3)
+                self.assertEqual(result["run_summary"]["verifier_calls"], 3)
+
+    def test_background_testimony_still_opts_out(self) -> None:
+        args = workflow_args()
+        overrides = {
+            f"lane-{index}": _make_scout(
+                f"lane-{index}", claim_type="attributed_report", importance="background"
+            )
+            for index in (1, 2, 3)
+        }
+        harness = FakeWorkflowHarness(args, scout_overrides=overrides)
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["run_summary"]["eligible_claims"], 0)
+        self.assertEqual(result["run_summary"]["verifier_calls"], 0)
+
+    def test_conclusion_driving_testimony_is_verified(self) -> None:
+        args = workflow_args()
+        overrides = {
+            f"lane-{index}": _make_scout(
+                f"lane-{index}", claim_type="interpretation", importance="conclusion-driving"
+            )
+            for index in (1, 2, 3)
+        }
+        harness = FakeWorkflowHarness(args, scout_overrides=overrides)
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["run_summary"]["verifier_calls"], 3)
+
+    def test_claim_type_and_trigger_enums_are_declared_in_the_schema(self) -> None:
+        source = WORKFLOW_PATH.read_text(encoding="utf-8")
+        for value in (
+            "attributed_report",
+            "external_fact",
+            "quantitative",
+            "causal",
+            "comparative",
+            "interpretation",
+        ):
+            self.assertIn(f'"{value}"', source)
+        self.assertIn('"claim_type": {"type": "string", "enum": CLAIM_TYPES}', source)
+
+
+class ScratchpadEvidenceTests(unittest.TestCase):
+    """Evidence depth lives in scratchpad dossiers, not in the return channel."""
+
+    def test_workspace_turns_on_dossiers_and_path_based_handoffs(self) -> None:
+        args = workflow_args(workspace=scratchpad_workspace())
+        harness = FakeWorkflowHarness(args)
+        result = asyncio.run(execute_workflow(harness))
+        root = harness.workspace_root()
+
+        self.assertEqual(result["status"], "complete")
+        self.assertTrue(result["run_summary"]["workspace_enabled"])
+        self.assertEqual(result["run_summary"]["dossiers"], 3)
+
+        scout_prompt = next(c["prompt"] for c in harness.calls if c["label"] == "scout:lane-1")
+        self.assertIn(f"{root}/lanes/lane-1.md", scout_prompt)
+        self.assertIn("EVIDENCE DOSSIER (required)", scout_prompt)
+        self.assertIn("verbatim quotations", scout_prompt)
+
+        verify_prompt = next(c["prompt"] for c in harness.calls if c["label"] == "verify:lane-1")
+        self.assertIn(f"{root}/lanes/lane-1.md", verify_prompt)
+        self.assertIn(f"{root}/lanes/lane-1.verify.md", verify_prompt)
+        self.assertIn("SELECTED CLAIMS:", verify_prompt)
+        # The verifier is not handed the whole scout record any more.
+        self.assertNotIn("SCOUT RECORD:", verify_prompt)
+        self.assertNotIn("candidate_claims", verify_prompt)
+
+    def test_coverage_and_audit_receive_a_claim_index_without_excerpts(self) -> None:
+        args = workflow_args(workspace=scratchpad_workspace())
+        harness = FakeWorkflowHarness(args)
+        asyncio.run(execute_workflow(harness))
+
+        for label in ("coverage", "audit:combined"):
+            with self.subTest(label=label):
+                prompt = next(c["prompt"] for c in harness.calls if c["label"] == label)
+                self.assertIn("CLAIM INDEX:", prompt)
+                self.assertNotIn("A compact supporting passage.", prompt)
+
+    def test_absent_workspace_keeps_inline_only_behaviour(self) -> None:
+        harness = FakeWorkflowHarness(workflow_args())
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["status"], "complete")
+        self.assertFalse(result["run_summary"]["workspace_enabled"])
+        self.assertEqual(result["run_summary"]["dossiers"], 0)
+        scout_prompt = next(c["prompt"] for c in harness.calls if c["label"] == "scout:lane-1")
+        self.assertNotIn("EVIDENCE DOSSIER", scout_prompt)
+        self.assertNotIn("deep-research/", scout_prompt)
+
+    def test_scout_that_cannot_persist_a_dossier_still_produces_a_report(self) -> None:
+        args = workflow_args(workspace=scratchpad_workspace())
+        harness = FakeWorkflowHarness(args, omit_dossier_paths=True)
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["run_summary"]["dossiers"], 0)
+        self.assertGreater(len(result["report_markdown"]), 50)
+        verify_prompt = next(c["prompt"] for c in harness.calls if c["label"] == "verify:lane-1")
+        self.assertNotIn("LANE DOSSIER:", verify_prompt)
+
+    def test_invalid_workspace_fails_before_dispatch(self) -> None:
+        cases = [
+            ("relative path", {"scratchpad_dir": "tmp/pad", "run_slug": "ok"}, "absolute path"),
+            ("empty path", {"scratchpad_dir": "", "run_slug": "ok"}, "absolute path"),
+            ("bad slug", {"scratchpad_dir": "/tmp/pad", "run_slug": "Bad Slug"}, "run_slug"),
+            ("slug leading dash", {"scratchpad_dir": "/tmp/pad", "run_slug": "-x"}, "run_slug"),
+            ("empty slug", {"scratchpad_dir": "/tmp/pad", "run_slug": ""}, "run_slug"),
+        ]
+        for name, workspace, expected in cases:
+            with self.subTest(name=name):
+                harness = FakeWorkflowHarness(workflow_args(workspace=workspace))
+                result = asyncio.run(execute_workflow(harness))
+
+                self.assertEqual(result["status"], "failed")
+                self.assertFalse(harness.calls)
+                self.assertTrue(
+                    any(expected in gap for gap in result["gaps"]),
+                    result["gaps"],
+                )
+
+
+class LongReportAssemblyTests(unittest.TestCase):
+    """Long reports are assembled from files, not one giant JSON string."""
+
+    @staticmethod
+    def long_args() -> dict[str, Any]:
+        args = workflow_args(workspace=scratchpad_workspace("long-report"))
+        args["report_profile"]["length"] = "detailed"
+        args["report_profile"]["target_words"] = 6_000
+        args["writing_reserve_tokens"] = 18_000
+        return args
+
+    def test_section_files_and_report_plan_replace_inline_body(self) -> None:
+        harness = FakeWorkflowHarness(self.long_args(), section_word_count=3_000)
+        result = asyncio.run(execute_workflow(harness))
+        root = harness.workspace_root()
+
+        self.assertEqual(result["run_summary"]["draft_mode"], "sections")
+        self.assertEqual(result["report_markdown"], "")
+        plan = result["report_plan"]
+        self.assertEqual(plan["body_path"], f"{root}/report/body.md")
+        self.assertEqual(len(plan["section_paths"]), 2)
+        self.assertTrue(plan["section_paths"][0].startswith(f"{root}/sections/01-"))
+        self.assertEqual(plan["assembled_word_count"], 6_000)
+        self.assertEqual(result["run_summary"]["expansion_passes"], 0)
+        self.assertTrue(result["source_registry"])
+
+        section_prompt = next(c["prompt"] for c in harness.calls if c["label"] == "section-draft:1")
+        self.assertIn(f"{root}/sections/01-", section_prompt)
+        self.assertIn("Do not return the body text", section_prompt)
+
+        audit_prompt = next(c["prompt"] for c in harness.calls if c["label"] == "audit:combined")
+        self.assertIn("REPORT FILE:", audit_prompt)
+        self.assertNotIn("\nREPORT: ", audit_prompt)
+
+    def test_short_assembly_triggers_exactly_one_expansion_pass(self) -> None:
+        harness = FakeWorkflowHarness(
+            self.long_args(),
+            section_word_count=500,
+            assembled_word_counts=[1_000, 5_400],
+        )
+        result = asyncio.run(execute_workflow(harness))
+
+        labels = [c["label"] for c in harness.calls]
+        self.assertEqual(result["run_summary"]["expansion_passes"], 1)
+        self.assertEqual(labels.count("draft-assembly"), 1)
+        self.assertEqual(labels.count("draft-assembly:2"), 1)
+        expansions = [label for label in labels if label.startswith("section-expand:")]
+        self.assertTrue(1 <= len(expansions) <= 3)
+        self.assertEqual(result["report_plan"]["assembled_word_count"], 5_400)
+
+    def test_persistent_shortfall_is_reported_but_still_delivered(self) -> None:
+        harness = FakeWorkflowHarness(
+            self.long_args(),
+            section_word_count=200,
+            assembled_word_counts=[900],
+        )
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertNotEqual(result["status"], "failed")
+        self.assertIsNotNone(result["report_plan"])
+        self.assertTrue(
+            any("materially shorter than the requested length" in gap for gap in result["gaps"]),
+            result["gaps"],
+        )
+
+    def test_missing_section_files_fall_back_to_one_bounded_draft(self) -> None:
+        harness = FakeWorkflowHarness(self.long_args(), omit_section_paths=True)
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["run_summary"]["draft_mode"], "single")
+        self.assertIsNone(result["report_plan"])
+        self.assertTrue(result["report_markdown"].startswith("# "))
+        self.assertTrue(
+            any("did not persist enough section files" in gap for gap in result["gaps"]),
+            result["gaps"],
+        )
+
+    def test_inline_section_drafting_without_a_workspace(self) -> None:
+        args = workflow_args()
+        args["report_profile"]["length"] = "detailed"
+        args["report_profile"]["target_words"] = 6_000
+        args["writing_reserve_tokens"] = 18_000
+        harness = FakeWorkflowHarness(args)
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["run_summary"]["draft_mode"], "sections")
+        self.assertIsNone(result["report_plan"])
+        self.assertEqual(result["report_markdown"].count("\n## Sources\n"), 1)
+
+
+class RouteAndIdentityContractTests(unittest.TestCase):
+    def test_malformed_routes_fail_before_dispatch(self) -> None:
+        cases = [
+            ("missing effort", {"provider": "p", "model": "m"}, "exactly provider, model"),
+            (
+                "extra key",
+                {"provider": "p", "model": "m", "effort": None, "extra": 1},
+                "exactly provider, model",
+            ),
+            ("empty model", {"provider": "p", "model": "", "effort": None}, "non-empty provider"),
+            ("not an object", "fixture-route", "complete route object"),
+        ]
+        for name, route, expected in cases:
+            with self.subTest(name=name):
+                args = workflow_args()
+                args["routes"] = {"discovery": route}
+                harness = FakeWorkflowHarness(args)
+                result = asyncio.run(execute_workflow(harness))
+
+                self.assertEqual(result["status"], "failed")
+                self.assertFalse(harness.calls)
+                self.assertTrue(
+                    any(expected in gap for gap in result["gaps"]),
+                    result["gaps"],
+                )
+
+    def test_unknown_route_role_is_rejected(self) -> None:
+        args = workflow_args()
+        args["routes"] = {"drafting": {"provider": "p", "model": "m", "effort": None}}
+        harness = FakeWorkflowHarness(args)
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(
+            any("not a recognized stage role" in gap for gap in result["gaps"]), result["gaps"]
+        )
+
+    def test_absent_route_roles_inherit_silently(self) -> None:
+        args = workflow_args()
+        args["routes"] = {"discovery": {"provider": "p", "model": "m", "effort": "high"}}
+        harness = FakeWorkflowHarness(args)
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["status"], "complete")
+        scout = next(c for c in harness.calls if c["label"] == "scout:lane-1")
+        draft = next(c for c in harness.calls if c["label"] == "draft")
+        self.assertEqual(scout["model_override"], args["routes"]["discovery"])
+        self.assertNotIn("model_override", draft)
+
+    def test_reused_lane_id_cannot_cross_wire_evidence(self) -> None:
+        """A follow-up scout reusing 'lane-1' keeps its own sources and claims."""
+        args = workflow_args()
+        colliding = _make_scout("lane-1")
+        colliding["sources"][0]["url"] = "https://example.test/followup-source"
+        colliding["sources"][0]["title"] = "Follow-up source"
+        harness = FakeWorkflowHarness(
+            args,
+            followup_needed=True,
+            scout_overrides={"scout": colliding},
+        )
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["run_summary"]["followups_run"], 1)
+        urls = sorted(source["url"] for source in result["source_registry"])
+        self.assertIn("https://example.test/lane-1", urls)
+        self.assertIn("https://example.test/followup-source", urls)
+
+        draft_prompt = next(c["prompt"] for c in harness.calls if c["label"] == "draft")
+        self.assertIn("'id': 'lane-1/C1'", draft_prompt)
+        self.assertIn("'id': 'followup-1/C1'", draft_prompt)
+
+
+class DocumentedBehaviourTests(unittest.TestCase):
+    """Documented behaviour must be reachable through the documented API."""
+
+    def setUp(self) -> None:
+        self.skill = SKILL_PATH.read_text(encoding="utf-8")
+        self.workflow_guide = (SKILL_ROOT / "references" / "gigacode-workflow.md").read_text(
+            encoding="utf-8"
+        )
+        self.evidence_guide = (SKILL_ROOT / "references" / "evidence-and-reporting.md").read_text(
+            encoding="utf-8"
+        )
+
+    def test_stage_plan_is_documented_with_its_audit_mapping(self) -> None:
+        self.assertIn("stage_plan", self.workflow_guide)
+        self.assertIn("stage_plan", self.skill)
+        for value in ("risk_only", "selective", "required", "deterministic", "combined", "dual"):
+            self.assertIn(value, self.workflow_guide)
+        self.assertIn('stage_plan.audit: "dual"', self.skill)
+
+    def test_claim_type_and_trigger_enums_are_documented(self) -> None:
+        for value in (
+            "attributed_report",
+            "external_fact",
+            "quantitative",
+            "causal",
+            "comparative",
+            "interpretation",
+        ):
+            self.assertIn(value, self.evidence_guide)
+        for trigger in (
+            "known_dispute",
+            "cross_source_conflict",
+            "scope_risk",
+            "source_access_uncertain",
+            "high_stakes",
+        ):
+            self.assertIn(trigger, self.evidence_guide)
+
+    def test_script_path_invocation_is_documented(self) -> None:
+        self.assertIn("script_path", self.skill)
+        self.assertIn("script_path", self.workflow_guide)
+        self.assertIn("takes precedence", self.workflow_guide)
+
+    def test_workspace_and_current_as_of_are_documented(self) -> None:
+        self.assertIn("workspace", self.skill)
+        self.assertIn("scratchpad_dir", self.workflow_guide)
+        self.assertIn("run_slug", self.workflow_guide)
+        self.assertIn("current_as_of", self.workflow_guide)
+        self.assertIn("current_as_of", self.skill)
+
+    def test_claim_statuses_are_documented(self) -> None:
+        for status in (
+            "verified",
+            "qualified",
+            "contested",
+            "refuted",
+            "attributed",
+            "single-source",
+            "unverified",
+        ):
+            self.assertIn(status, self.evidence_guide)
+
+    def test_sequential_fallback_uses_scratchpad_files(self) -> None:
+        fallback = self.skill.split("### Sequential fallback", 1)[1]
+        self.assertIn("scratchpad", fallback)
+        self.assertIn("registry.json", fallback)
+        self.assertIn("not in conversation context", fallback)
+
+
 class MaterializeReportTests(unittest.TestCase):
     def payload(self, status: str = "complete") -> dict[str, Any]:
         return {
@@ -1399,6 +2240,16 @@ class MaterializeReportTests(unittest.TestCase):
                 "- [Source](https://example.test/source)\n"
             ),
             "cited_sources": [],
+            "source_registry": [
+                {
+                    "id": "S001",
+                    "title": "Source",
+                    "url": "https://example.test/source",
+                    "publisher": "Example",
+                    "date": "2025",
+                    "source_type": "primary",
+                }
+            ],
             "gaps": [],
         }
 
@@ -1409,16 +2260,18 @@ class MaterializeReportTests(unittest.TestCase):
             result.write_text(json.dumps(self.payload()), encoding="utf-8")
             output = root / "reports" / "report.md"
 
-            path, status = MATERIALIZER.materialize_report(result, output)
+            path, status, warnings = MATERIALIZER.materialize_report(result, output)
 
             self.assertEqual(path, output)
             self.assertEqual(status, "complete")
+            self.assertEqual(warnings, [])
             self.assertTrue(output.read_text(encoding="utf-8").endswith("\n"))
 
     def test_materializes_markdown_result_and_supported_partial(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             payload = self.payload("partial")
+            payload["gaps"] = ["One archival series stayed inaccessible."]
             result = root / "result.md"
             result.write_text(
                 "# Workflow result\n\n"
@@ -1426,10 +2279,131 @@ class MaterializeReportTests(unittest.TestCase):
                 f"```json\n{json.dumps(payload)}\n```\n",
                 encoding="utf-8",
             )
+            output = root / "partial.md"
 
-            _, status = MATERIALIZER.materialize_report(result, root / "partial.md")
+            _, status, _ = MATERIALIZER.materialize_report(result, output)
 
             self.assertEqual(status, "partial")
+            written = output.read_text(encoding="utf-8")
+            self.assertIn("## Scope and gaps", written)
+            self.assertIn("One archival series stayed inaccessible.", written)
+            # The gaps note precedes the bibliography.
+            self.assertLess(written.index("## Scope and gaps"), written.index("## Sources"))
+
+    def test_complete_report_has_no_gaps_section(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload = self.payload("complete")
+            payload["gaps"] = ["A minor note."]
+            result = root / "result.json"
+            result.write_text(json.dumps(payload), encoding="utf-8")
+            output = root / "complete.md"
+
+            MATERIALIZER.materialize_report(result, output)
+
+            self.assertNotIn("## Scope and gaps", output.read_text(encoding="utf-8"))
+
+    def test_assembles_report_plan_from_the_body_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            body = root / "body.md"
+            body.write_text(
+                "# A Long, Unified Report\n\n"
+                "The opening cites [Saturn](https://en.wikipedia.org/wiki/Saturn_(mythology)) "
+                "and a [dated series](https://example.gov/data?report=2024).\n\n"
+                "## First movement\n\n"
+                "Body prose with an image ![chart](https://example.test/chart.png) and "
+                "`[code](nope)`.\n",
+                encoding="utf-8",
+            )
+            payload = {
+                "status": "complete",
+                "report_markdown": "",
+                "report_plan": {
+                    "title": "A Long, Unified Report",
+                    "body_path": str(body),
+                    "section_paths": [str(root / "01-first.md")],
+                    "assembled_word_count": 11_000,
+                },
+                "cited_sources": [],
+                "source_registry": [
+                    {
+                        "id": "S001",
+                        "title": "Saturn (mythology)",
+                        "url": "https://en.wikipedia.org/wiki/Saturn_(mythology)",
+                        "publisher": "Wikipedia",
+                        "date": "",
+                        "source_type": "reference",
+                    },
+                    {
+                        "id": "S002",
+                        "title": "Report 2024",
+                        "url": "https://example.gov/data?report=2024",
+                        "publisher": "Example Agency",
+                        "date": "2024",
+                        "source_type": "official",
+                    },
+                    {
+                        "id": "S003",
+                        "title": "Report 2019",
+                        "url": "https://example.gov/data?report=2019",
+                        "publisher": "Example Agency",
+                        "date": "2019",
+                        "source_type": "official",
+                    },
+                ],
+                "gaps": [],
+            }
+            result = root / "result.json"
+            result.write_text(json.dumps(payload), encoding="utf-8")
+            output = root / "long.md"
+
+            path, status, warnings = MATERIALIZER.materialize_report(result, output)
+
+            written = path.read_text(encoding="utf-8")
+            self.assertEqual(status, "complete")
+            self.assertEqual(warnings, [])
+            self.assertEqual(written.count("\n## Sources\n"), 1)
+            # Parenthesised and query-bearing URLs both resolve to their own source.
+            self.assertIn("[Saturn (mythology)](https://en.wikipedia.org/wiki/Saturn_", written)
+            self.assertIn("https://example.gov/data?report=2024", written)
+            # The uncited 2019 series is not smuggled into the bibliography.
+            self.assertNotIn("report=2019", written)
+            # Images and inline code are not citations.
+            self.assertNotIn("chart.png", written.split("## Sources")[1])
+
+    def test_report_plan_requires_a_readable_body_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload = {
+                "status": "complete",
+                "report_markdown": "",
+                "report_plan": {"title": "T", "body_path": str(root / "missing.md")},
+                "source_registry": [],
+                "gaps": [],
+            }
+            result = root / "result.json"
+            result.write_text(json.dumps(payload), encoding="utf-8")
+            output = root / "out.md"
+
+            with self.assertRaises(MATERIALIZER.MaterializationError):
+                MATERIALIZER.materialize_report(result, output)
+            self.assertFalse(output.exists())
+
+    def test_short_report_is_delivered_with_a_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload = self.payload()
+            payload["run_summary"] = {"target_words": 6_000}
+            result = root / "result.json"
+            result.write_text(json.dumps(payload), encoding="utf-8")
+            output = root / "short.md"
+
+            path, _, warnings = MATERIALIZER.materialize_report(result, output)
+
+            self.assertTrue(path.exists())
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("requested target of about 6000", warnings[0])
 
     def test_refuses_collision_and_supports_numbered_or_explicit_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1442,13 +2416,13 @@ class MaterializeReportTests(unittest.TestCase):
             with self.assertRaises(MATERIALIZER.MaterializationError):
                 MATERIALIZER.materialize_report(result, output)
 
-            numbered, _ = MATERIALIZER.materialize_report(
+            numbered, _, _ = MATERIALIZER.materialize_report(
                 result,
                 output,
                 collision_safe=True,
             )
             self.assertEqual(numbered.name, "report-2.md")
-            overwritten, _ = MATERIALIZER.materialize_report(
+            overwritten, _, _ = MATERIALIZER.materialize_report(
                 result,
                 output,
                 overwrite=True,
@@ -1465,6 +2439,13 @@ class MaterializeReportTests(unittest.TestCase):
                 (
                     "malformed.json",
                     {"status": "complete", "report_markdown": "# Title\n\nNo sources.\n"},
+                ),
+                (
+                    "bodyless.json",
+                    {
+                        "status": "complete",
+                        "report_markdown": "# Title\n\n## Sources\n\n- [S](https://e.test/s)\n",
+                    },
                 ),
             ]
             for filename, payload in cases:

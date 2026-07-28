@@ -52,6 +52,52 @@ For each candidate claim, record:
 
 The reader-facing report must never expose internal IDs.
 
+### Classify claims with the exact enum values
+
+`claim_type` and `verification_triggers` are schema enums. They decide what gets
+verified, so an invented value is rejected outright rather than silently changing
+behavior:
+
+| `claim_type` | Use for |
+| --- | --- |
+| `external_fact` | a checkable fact about the world |
+| `quantitative` | a number, rate, magnitude, or trend |
+| `causal` | an assertion that one thing produced another |
+| `comparative` | a ranking or "more/less than" judgment |
+| `attributed_report` | what a named source said, did, or experienced |
+| `interpretation` | an analytic or scholarly reading of material |
+
+| `verification_triggers` | Use when |
+| --- | --- |
+| `known_dispute` | credible sources are known to disagree |
+| `cross_source_conflict` | this lane's own sources conflict |
+| `scope_risk` | the sample, jurisdiction, or period may not match the claim |
+| `source_access_uncertain` | the supporting source may not stay reachable |
+| `high_stakes` | a wrong answer here carries real cost |
+
+`attributed_report` and `interpretation` are the only types that opt out of
+verification, and only when the claim is neither disputed nor conclusion-driving.
+Testimony that carries the argument still gets checked. A claim whose type is
+absent falls back to the conservative rule — verify it if it is
+conclusion-driving or disputed — so a mislabeled claim is never skipped.
+
+### Claim statuses
+
+Verification assigns each claim exactly one status, and the drafter is bound by it:
+
+| Status | Meaning | Drafting |
+| --- | --- | --- |
+| `verified` | independently checked and supported | may carry a factual conclusion |
+| `qualified` | supported within a stated limit | keep the qualification next to the claim |
+| `contested` | credible support is unresolved or conflicting | present the disagreement; conclude nothing decisive |
+| `refuted` | the evidence does not support it | excluded from the report |
+| `attributed` | testimony or interpretation, not externally checkable | attribute explicitly; never evidence of prevalence |
+| `single-source` | background resting on one source | cite and attribute; not independently corroborated |
+| `unverified` | eligible but not checked | usable with explicit attribution and hedged language |
+
+Not being selected for verification is never a mark of quality. `single-source`
+does not outrank `unverified`, and neither may be presented as corroborated.
+
 ## 2. Judge source fitness
 
 Use the strongest available source for the claim:
@@ -108,7 +154,14 @@ Keep a compact shared ledger:
 canonical URL | failure class | attempts | alternate tried | claim affected
 ```
 
-Canonicalize away fragments and tracking/query variants for retry decisions.
+Canonicalize away the fragment and known tracking parameters, but **keep the rest
+of the query string**: `?report=2019` and `?report=2024` are different documents,
+and collapsing them mis-attributes citations.
+
+Under orchestration, a verifier receives its own lane's ledger, which is what
+prevents same-source retries. The cross-lane ledger is assembled after the research
+pipeline for the follow-up and escalation stages. Working sequentially, keep one
+ledger for the whole run.
 
 Terminal failures require zero same-source retries:
 
@@ -153,12 +206,20 @@ Verification is for:
 Background claims with direct authoritative support do not need a wholesale second
 research pass.
 
+Every lane holding eligible claims is verified. Verification capacity is not
+rationed across lanes and none is held back for a possible follow-up: a report
+whose conclusion-driving claims went unchecked is worse than one that costs a few
+more bounded calls.
+
 A verifier receives:
 
-- the lane's compact scout record;
-- the global failed-acquisition ledger;
-- the claims selected for verification; and
+- the lane's summary, its selected claims, and only the evidence and source cards
+  those claims depend on;
+- the path to the lane's evidence dossier, when one exists;
+- the lane's failed-acquisition ledger; and
 - a small verification acquisition ceiling.
+
+It reads the dossier for depth rather than being handed the whole scout record.
 
 It returns a delta only:
 
@@ -193,10 +254,37 @@ Calibrate language:
 - **Tentative:** suggests, may reflect, is plausibly explained by.
 - **Unresolved:** evidence is insufficient or credible sources disagree.
 
-## 6. Use compact handoffs
+## 6. Keep handoffs compact by writing evidence down
 
-Research cost grows when every stage reproduces full source cards. Pass only what
-the next stage needs.
+Research cost grows when every stage reproduces full source cards, but compressing
+evidence into one-line paraphrases starves the drafter. Resolve the tension by
+separating depth from transport: write full-fidelity evidence to a file and pass
+paths.
+
+### Evidence dossiers
+
+When a session scratchpad is available, each scout writes a dossier alongside its
+compact record:
+
+```text
+<scratchpad>/deep-research/<run-slug>/lanes/<lane-key>.md
+```
+
+The dossier is where depth belongs — full bibliographic metadata, access status,
+and generous verbatim quotation with enough surrounding context for a later stage
+to judge directness, scope, and date fitness without refetching. Record rejected
+leads and the detail behind each failed acquisition too.
+
+Downstream stages receive the path and read what they need. Verifiers add their own
+working notes next to the dossier. Nothing large travels through a stage's return
+value.
+
+This is additive. When no scratchpad is available or a worker cannot write one,
+every stage falls back to the inline compact records below and the run still
+completes; say so in the gaps rather than failing.
+
+Never write a deliverable to the scratchpad — it is throwaway by design. The report
+is written into the project at the end.
 
 ### Scout record
 
@@ -218,13 +306,14 @@ the next stage needs.
 ### Coverage input
 
 - one short supported synthesis per lane;
-- conclusion-driving claim index;
+- a claim index with status and source IDs but **no evidence excerpts**;
 - source-class coverage;
+- dossier paths for anything that needs a closer look;
 - unresolved gaps and failed-source effects; and
 - the inferred target length and report profile needed to decide drafting shape.
 
 Do not pass complete fetched text, search transcripts, duplicated source cards, or
-full evidence ledgers into coverage and audit prompts.
+full evidence ledgers into coverage and audit prompts. Pass the path instead.
 
 ### Drafting-shape decision
 
@@ -244,10 +333,21 @@ When section drafting is warranted:
 
 1. coverage returns a short outline, purpose, and supported claim IDs per section;
 2. draft the bounded sections in parallel using only their assigned claims;
-3. run one synthesis pass to remove repetition, reconcile transitions, normalize
-   voice, and preserve the opening thesis and conclusion; and
-4. build the bibliography from the synthesized body, not from section-reported
+3. assemble the sections into one body, then
+4. build the bibliography from the assembled body, not from section-reported
    source lists.
+
+With a scratchpad, each section is written to its own file and the assembly stage
+writes `report/body.md`: a title, an opening that answers the question early, the
+sections in order with reconciled transitions and normalized voice, and an
+evidence-calibrated conclusion. A long report must not be re-emitted as one giant
+JSON string; that is the most truncation-prone shape available.
+
+Verify the delivered length against the target with `wc -w` rather than trusting an
+impression. A report materially shorter than the confirmed target gets one bounded
+expansion pass over its thinnest sections — adding evidence, mechanism, and concrete
+detail from the dossiers, never padding — and is then reassembled. One pass only: a
+short report that is honest still ships, with the shortfall disclosed.
 
 ## 7. Reader-fit report contract
 
@@ -338,11 +438,21 @@ Avoid:
 - multiple citations that all derive from one origin; and
 - citation density that obscures the argument when one stronger source suffices.
 
-The deterministic bibliography builder should extract URLs from the final body,
-resolve them against the canonical registry, and create `## Sources`. Writer-reported
+The deterministic bibliography builder extracts URLs from the final body, resolves
+them against the canonical registry, and creates `## Sources`. Writer-reported
 source lists are advisory only.
 
+Link extraction has to be exact, because a mis-parsed URL looks like an unsupported
+citation. It must honor balanced parentheses in a destination — Wikipedia's
+`Saturn_(mythology)` style is everywhere in historical research — skip images,
+inline code, and fenced blocks, tolerate an optional link title, and ignore
+anchors and mail links rather than reporting them as unknown sources.
+
 ## 9. Audit proportionally
+
+Choose the audit mode deliberately rather than leaving it implicit: `combined` for
+Focused and ordinary Standard work, `dual` for Extended or high-stakes work, and
+`deterministic` only when no judgment-based audit is warranted.
 
 One combined evidence/editorial audit is enough for Focused and ordinary Standard
 reports. It checks:
@@ -370,3 +480,8 @@ unresolved critical or major evidence issue. Deterministic checks—not agents�
 
 If evidence cannot support a material claim, remove or narrow the claim and name
 the gap. More process is not a substitute for better evidence.
+
+A residual defect never justifies throwing the report away. Deliver it as a
+supported partial result with the unresolved issues named, and let the reader see
+what is unsettled. Discarding a finished report because a citation would not
+resolve serves nobody.

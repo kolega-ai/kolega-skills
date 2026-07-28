@@ -7,3 +7,6 @@ __pycache__/
 .venv/
 dist/
 build/
+
+# Deep-research report artifacts written into the working tree
+/reports/

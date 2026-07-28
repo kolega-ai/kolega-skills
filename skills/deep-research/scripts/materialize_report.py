@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Materialize a deep-research workflow result as a validated Markdown report."""
+"""Materialize a deep-research workflow result as a validated Markdown report.
+
+This module owns the authoritative deterministic report logic: Markdown link
+extraction, URL identity, ``## Sources`` construction, and structural
+validation. The bundled workflow keeps a mirrored in-sandbox copy for audit
+hints only, because a Gigacode script has no filesystem access. The regression
+suite asserts both implementations agree on a shared fixture corpus.
+"""
 
 from __future__ import annotations
 
@@ -10,11 +17,315 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Query parameters that never identify a distinct document.
+TRACKING_PARAMS = frozenset({"gclid", "fbclid", "ref", "ref_src", "s", "share"})
+
+# Fraction of the requested word target below which the report is flagged short.
+SHORTFALL_RATIO = 0.8
+
 
 class MaterializationError(ValueError):
     """Raised when a workflow result cannot be materialized safely."""
 
 
+# ---------------------------------------------------------------------------
+# Deterministic text helpers (mirrored by scripts/deep-research.workflow)
+# ---------------------------------------------------------------------------
+def canonical_url(value: Any) -> str:
+    """Return a comparison key that preserves meaningful query parameters.
+
+    Drops the fragment and known tracking parameters, lowercases the scheme and
+    host, sorts the surviving query parameters, and strips one trailing slash.
+    Two URLs differing only in a meaningful query parameter stay distinct.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.split("#", 1)[0]
+    scheme = ""
+    rest = text
+    marker = text.find("://")
+    if marker >= 0:
+        scheme = text[:marker].lower()
+        rest = text[marker + 3 :]
+    query = ""
+    question = rest.find("?")
+    if question >= 0:
+        query = rest[question + 1 :]
+        rest = rest[:question]
+    slash = rest.find("/")
+    if slash >= 0:
+        host = rest[:slash].lower()
+        path = rest[slash:]
+    else:
+        host = rest.lower()
+        path = ""
+    if len(path) > 1 and path.endswith("/"):
+        path = path[:-1]
+    kept = []
+    for part in query.split("&"):
+        if not part:
+            continue
+        key = part.split("=", 1)[0].lower()
+        if key in TRACKING_PARAMS or key.startswith("utm_"):
+            continue
+        kept.append(part)
+    base = f"{scheme}://" if scheme else ""
+    base += host + path
+    if kept:
+        return base + "?" + "&".join(sorted(kept))
+    return base
+
+
+def strip_fenced_code(text: Any) -> str:
+    """Blank out fenced code blocks so their contents cannot look like citations."""
+    kept: list[str] = []
+    in_fence = False
+    fence = ""
+    for line in str(text or "").split("\n"):
+        stripped = line.strip()
+        marker = ""
+        if stripped.startswith("```"):
+            marker = "```"
+        elif stripped.startswith("~~~"):
+            marker = "~~~"
+        if marker:
+            if in_fence:
+                if marker == fence:
+                    in_fence = False
+                    fence = ""
+            else:
+                in_fence = True
+                fence = marker
+            kept.append("")
+            continue
+        kept.append("" if in_fence else line)
+    return "\n".join(kept)
+
+
+def strip_inline_code(text: Any) -> str:
+    """Drop inline code spans so `[a](b)` is not read as a citation."""
+    source = str(text or "")
+    length = len(source)
+    kept: list[str] = []
+    index = 0
+    while index < length:
+        if source[index] == "`":
+            run = 0
+            while index + run < length and source[index + run] == "`":
+                run += 1
+            closing = source.find("`" * run, index + run)
+            if closing < 0:
+                index += run
+                continue
+            index = closing + run
+            continue
+        kept.append(source[index])
+        index += 1
+    return "".join(kept)
+
+
+def matching_bracket(text: str, start: int) -> int:
+    """Index of the ``]`` closing the ``[`` at ``start``, or -1."""
+    depth = 0
+    index = start
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return -1
+
+
+def link_destination(text: str, start: int) -> tuple[str, int]:
+    """Parse a Markdown link destination, returning (destination, closing index)."""
+    length = len(text)
+    index = start
+    while index < length and text[index] in " \t\n":
+        index += 1
+    destination = ""
+    if index < length and text[index] == "<":
+        end = text.find(">", index + 1)
+        if end < 0:
+            return "", -1
+        destination = text[index + 1 : end]
+        index = end + 1
+    else:
+        depth = 0
+        chars: list[str] = []
+        while index < length:
+            char = text[index]
+            if char in " \t\n":
+                break
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                if depth == 0:
+                    break
+                depth -= 1
+            chars.append(char)
+            index += 1
+        destination = "".join(chars)
+    while index < length and text[index] in " \t\n":
+        index += 1
+    if index < length and text[index] in ('"', "'", "("):
+        closer = ")" if text[index] == "(" else text[index]
+        end = text.find(closer, index + 1)
+        if end < 0:
+            return "", -1
+        index = end + 1
+        while index < length and text[index] in " \t\n":
+            index += 1
+    if index < length and text[index] == ")":
+        return destination.strip(), index
+    return "", -1
+
+
+def markdown_urls(markdown: Any) -> list[str]:
+    """Extract http(s) destinations from Markdown inline links, in order.
+
+    Skips fenced blocks, inline code, and images; honors balanced parentheses in
+    the destination and an optional link title; ignores non-http destinations so
+    anchors and mail links are not reported as unknown citations.
+    """
+    text = strip_inline_code(strip_fenced_code(markdown))
+    length = len(text)
+    urls: list[str] = []
+    index = 0
+    while index < length:
+        if text[index] != "[":
+            index += 1
+            continue
+        is_image = index > 0 and text[index - 1] == "!"
+        label_end = matching_bracket(text, index)
+        if label_end < 0 or label_end + 1 >= length or text[label_end + 1] != "(":
+            index += 1
+            continue
+        destination, close = link_destination(text, label_end + 2)
+        if close < 0:
+            index += 1
+            continue
+        if not is_image and destination:
+            lowered = destination.lower()
+            if lowered.startswith(("http://", "https://")) and destination not in urls:
+                urls.append(destination)
+        index = close + 1
+    return urls
+
+
+def strip_sources_section(markdown: Any) -> str:
+    """Return the body with any trailing ``## Sources`` section and title removed."""
+    lines = str(markdown or "").strip().splitlines()
+    kept: list[str] = []
+    for line in lines:
+        if line.strip().lower() == "## sources":
+            break
+        kept.append(line)
+    if kept and kept[0].startswith("# "):
+        kept = kept[1:]
+    return "\n".join(kept).strip()
+
+
+def structural_issues(report: str) -> list[str]:
+    """Structural defects that make a report unfit to deliver."""
+    issues: list[str] = []
+    text = str(report or "").strip()
+    if not text.startswith("# "):
+        issues.append("missing level-one title")
+    if text.count("\n## Sources\n") != 1:
+        issues.append("report must contain exactly one `## Sources` section")
+    lines = text.splitlines()
+    seen: list[str] = []
+    for index, line in enumerate(lines):
+        if not line.startswith("## "):
+            continue
+        key = line.strip().lower()
+        if key in seen:
+            issues.append(f"duplicate heading: {line.strip()}")
+        seen.append(key)
+        cursor = index + 1
+        has_content = False
+        while cursor < len(lines) and not lines[cursor].startswith("## "):
+            if lines[cursor].strip():
+                has_content = True
+                break
+            cursor += 1
+        if not has_content:
+            issues.append(f"empty section: {line.strip()}")
+    return issues
+
+
+def source_entry(source: dict[str, Any], fallback_url: str) -> str:
+    """One deduplicated bibliography line."""
+    title = str(source.get("title") or "").strip() or fallback_url
+    url = str(source.get("url") or "").strip() or fallback_url
+    detail = str(source.get("publisher") or source.get("source_type") or "").strip()
+    date = str(source.get("date") or "").strip()
+    if date:
+        detail = f"{detail}, {date}".strip(", ")
+    suffix = f" — {detail}" if detail else ""
+    return f"- [{title}]({url}){suffix}"
+
+
+def assemble_report(
+    title: str, body: str, registry: list[dict[str, Any]]
+) -> tuple[str, list[dict[str, Any]], list[str]]:
+    """Build the final report and its ``## Sources`` section from the body's links."""
+    clean_title = str(title or "").strip().lstrip("#").strip()
+    clean_body = strip_sources_section(body)
+    by_url = {canonical_url(source.get("url")): source for source in registry}
+    by_url.pop("", None)
+
+    cited_keys: list[str] = []
+    unknown: list[str] = []
+    for url in markdown_urls(clean_body):
+        key = canonical_url(url)
+        if key in by_url:
+            if key not in cited_keys:
+                cited_keys.append(key)
+        elif url not in unknown:
+            unknown.append(url)
+
+    cited_sources = [by_url[key] for key in cited_keys]
+    lines = [source_entry(by_url[key], key) for key in cited_keys]
+    report = f"# {clean_title}\n\n{clean_body}\n\n## Sources\n\n" + "\n".join(lines)
+    report = report.strip() + "\n"
+
+    issues: list[str] = []
+    if not clean_title:
+        issues.append("report has no title")
+    if not clean_body:
+        issues.append("report body is empty")
+    if not cited_sources:
+        issues.append("report body cites no source from the workflow registry")
+    if unknown:
+        issues.append(f"citations absent from the source registry: {', '.join(unknown)}")
+    return report, cited_sources, issues
+
+
+def insert_gaps_section(report: str, gaps: list[str]) -> str:
+    """Insert a ``## Scope and gaps`` section ahead of ``## Sources``."""
+    entries = [str(gap).strip() for gap in gaps if str(gap).strip()]
+    if not entries:
+        return report
+    block = "## Scope and gaps\n\nThis report is a supported partial result. The "
+    block += "following points remain unresolved:\n\n"
+    block += "\n".join(f"- {entry}" for entry in entries)
+    marker = "\n## Sources\n"
+    if marker in report:
+        head, tail = report.split(marker, 1)
+        return f"{head}\n\n{block}\n{marker}{tail}"
+    return f"{report.rstrip()}\n\n{block}\n"
+
+
+# ---------------------------------------------------------------------------
+# Workflow result loading
+# ---------------------------------------------------------------------------
 def _decode_json(text: str, source: Path) -> Any:
     try:
         return json.loads(text)
@@ -49,8 +360,35 @@ def load_workflow_result(path: Path) -> dict[str, Any]:
     return payload
 
 
-def validate_report_payload(payload: dict[str, Any]) -> tuple[str, str]:
-    """Return normalized report Markdown and status after structural validation."""
+def _registry(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    registry = payload.get("source_registry")
+    if isinstance(registry, list):
+        return [source for source in registry if isinstance(source, dict)]
+    cited = payload.get("cited_sources")
+    if isinstance(cited, list):
+        return [source for source in cited if isinstance(source, dict)]
+    return []
+
+
+def _word_shortfall_warning(payload: dict[str, Any], report: str) -> str | None:
+    summary = payload.get("run_summary")
+    if not isinstance(summary, dict):
+        return None
+    target = summary.get("target_words")
+    if not isinstance(target, int) or isinstance(target, bool) or target <= 0:
+        return None
+    words = len(strip_sources_section(report).split())
+    if words >= int(target * SHORTFALL_RATIO):
+        return None
+    return f"report is {words} words against a requested target of about {target}"
+
+
+def resolve_report(payload: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
+    """Return (report Markdown, status, cited sources) after structural validation.
+
+    A ``report_plan`` is preferred: its body file is the authoritative text for a
+    long report, and the bibliography is built here from the workflow registry.
+    """
     status = payload.get("status")
     if status not in {"complete", "partial"}:
         raise MaterializationError(
@@ -58,23 +396,35 @@ def validate_report_payload(payload: dict[str, Any]) -> tuple[str, str]:
             "reports can be written"
         )
 
-    report = payload.get("report_markdown")
-    if not isinstance(report, str) or not report.strip():
-        raise MaterializationError("workflow result has no nonempty report_markdown")
-    report = report.strip() + "\n"
+    plan = payload.get("report_plan")
+    if isinstance(plan, dict) and str(plan.get("body_path") or "").strip():
+        body_path = Path(str(plan["body_path"]).strip())
+        if not body_path.is_file():
+            raise MaterializationError(f"{body_path}: report body file does not exist")
+        body_text = body_path.read_text(encoding="utf-8")
+        if not body_text.strip():
+            raise MaterializationError(f"{body_path}: report body file is empty")
+        title = str(plan.get("title") or "").strip()
+        first_line = body_text.strip().splitlines()[0]
+        if not title and first_line.startswith("# "):
+            title = first_line[2:].strip()
+        report, cited, issues = assemble_report(title, body_text, _registry(payload))
+    else:
+        raw = payload.get("report_markdown")
+        if not isinstance(raw, str) or not raw.strip():
+            raise MaterializationError(
+                "workflow result has neither a report_plan body file nor a nonempty report_markdown"
+            )
+        report = raw.strip() + "\n"
+        cited = [source for source in payload.get("cited_sources", []) if isinstance(source, dict)]
+        issues = []
 
-    if not report.startswith("# "):
-        raise MaterializationError("report must begin with a level-one Markdown title")
-    if report.count("\n## Sources\n") != 1:
-        raise MaterializationError("report must contain exactly one `## Sources` section")
-
-    body, sources = report.split("\n## Sources\n", 1)
-    if not body.strip() or len(body.splitlines()) < 2:
-        raise MaterializationError("report body is empty")
-    source_lines = [line for line in sources.splitlines() if line.strip().startswith(("- ", "* "))]
-    if not source_lines:
-        raise MaterializationError("Sources section contains no source entries")
-    return report, status
+    if not strip_sources_section(report).strip():
+        issues.append("report body is empty")
+    issues.extend(structural_issues(report))
+    if issues:
+        raise MaterializationError("report is not deliverable: " + "; ".join(issues))
+    return report, status, cited
 
 
 def collision_safe_path(path: Path) -> Path:
@@ -96,13 +446,26 @@ def materialize_report(
     *,
     overwrite: bool = False,
     collision_safe: bool = False,
-) -> tuple[Path, str]:
-    """Validate a workflow result and write its report, returning path and status."""
+) -> tuple[Path, str, list[str]]:
+    """Validate a workflow result and write its report.
+
+    Returns the destination path, the workflow status, and any advisory warnings.
+    """
     if overwrite and collision_safe:
         raise MaterializationError("choose either overwrite or collision-safe output, not both")
 
     payload = load_workflow_result(result_path)
-    report, status = validate_report_payload(payload)
+    report, status, _cited = resolve_report(payload)
+
+    warnings: list[str] = []
+    shortfall = _word_shortfall_warning(payload, report)
+    if shortfall:
+        warnings.append(shortfall)
+
+    if status == "partial":
+        gaps = [str(gap) for gap in payload.get("gaps", []) if str(gap).strip()]
+        report = insert_gaps_section(report, gaps)
+
     destination = Path(output_path)
     if destination.exists():
         if overwrite:
@@ -118,7 +481,7 @@ def materialize_report(
     destination.write_text(report, encoding="utf-8")
     if destination.stat().st_size == 0:
         raise MaterializationError(f"{destination}: report write produced an empty file")
-    return destination, status
+    return destination, status, warnings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -139,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        path, status = materialize_report(
+        path, status, warnings = materialize_report(
             args.result_path,
             args.output_path,
             overwrite=args.overwrite,
@@ -149,6 +512,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Materialization failed: {exc}", file=sys.stderr)
         return 1
 
+    for warning in warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
     print(f"Materialized {status} report: {path}")
     return 0
 
