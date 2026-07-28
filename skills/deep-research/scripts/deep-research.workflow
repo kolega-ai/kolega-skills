@@ -335,7 +335,26 @@ ROUTE_ROLES = ("discovery", "verification", "synthesis", "audit", "acquisition")
 MAX_CLAIMS_PER_VERIFIER_CALL = 8
 SHORTFALL_RATIO_NUMERATOR = 4
 SHORTFALL_RATIO_DENOMINATOR = 5
+# 1.35x the target: past this the report has stopped honoring the confirmed brief.
+OVERLENGTH_RATIO_NUMERATOR = 27
+OVERLENGTH_RATIO_DENOMINATOR = 20
 MAX_EXPANDED_SECTIONS = 3
+
+# Keys the workflow actually acts on. A worker whose structured output degenerates
+# can return a dict that satisfies "is a dict" while omitting the decisions the
+# stage exists to make; treat that as a stage failure instead of degrading quietly.
+COVERAGE_ACTED_ON_KEYS = (
+    "followup_needed",
+    "section_drafting_needed",
+    "section_outline",
+    "gaps",
+)
+
+READER_FACING_GAPS = (
+    "State every gap in reader-facing language: name the missing evidence and why it "
+    "matters. Never mention lane identifiers, claim or evidence IDs, worker roles, "
+    "or the structure of these records."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -714,10 +733,54 @@ def claim_index(claims):
     ]
 
 
-def new_record(scout, lane_key, lane_id, dossier_path):
+def missing_stage_keys(value, required_keys):
+    """Required keys a stage result omitted or left null.
+
+    Structured output occasionally degenerates — for example collapsing every
+    later field into the first string field — leaving a dict that passes an
+    isinstance check but carries none of the decisions the stage was asked for.
+    """
+    if not isinstance(value, dict):
+        return sorted(required_keys)
+    return sorted(key for key in required_keys if value.get(key) is None)
+
+
+def derive_section_outline(records, claims):
+    """One reader-facing section per lane that produced citable claims.
+
+    Fallback only. Lanes are evidence boundaries rather than argument boundaries,
+    so the assembly stage is told to rename and reorder these headings. It exists
+    so that a long report is never forced through a single drafting call merely
+    because the coverage stage failed to return a usable outline.
+    """
+    by_lane = {}
+    for claim in claims:
+        lane_key = str(claim.get("id", "")).split("/", 1)[0]
+        by_lane.setdefault(lane_key, []).append(claim.get("id"))
+    outline = []
+    for record in records:
+        lane_key = record.get("lane_key", "")
+        claim_ids = by_lane.get(lane_key) or []
+        if not claim_ids:
+            continue
+        heading = (
+            str(record.get("lane_title", "")).strip()
+            or str(record.get("lane_id", "")).strip()
+            or lane_key
+        )
+        purpose = str(record.get("lane_question", "")).strip() or (
+            "Present the supported evidence gathered for " + heading + "."
+        )
+        outline.append({"heading": heading, "purpose": purpose, "claim_ids": claim_ids})
+    return outline
+
+
+def new_record(scout, lane_key, lane_id, dossier_path, lane_title="", lane_question=""):
     return {
         "lane_key": lane_key,
         "lane_id": lane_id,
+        "lane_title": lane_title,
+        "lane_question": lane_question,
         "scout": scout,
         "verification": None,
         "eligible_claim_ids": [],
@@ -976,9 +1039,11 @@ def word_count(text):
 # ---------------------------------------------------------------------------
 stages_run = []
 stages_skipped = []
+degraded_stages = []
 research_records = []
 partial_reasons = []
 draft_mode = "single"
+section_outline_source = "none"
 followups_run = 0
 escalations_run = 0
 expansion_passes = 0
@@ -1199,6 +1264,8 @@ def make_summary():
         "stage_plan": resolved_plan,
         "stages_run": stages_run,
         "stages_skipped": stages_skipped,
+        "degraded_stages": degraded_stages,
+        "section_outline_source": section_outline_source,
         "eligible_claims": eligible,
         "selected_claims": selected,
         "deferred_claims": deferred,
@@ -1319,7 +1386,8 @@ def research_prompt(lane, lane_key, searches, fetches, special_instruction=""):
         + ") and verification_triggers (any of "
         + ", ".join(VERIFICATION_TRIGGERS)
         + ") where applicable. Use only these exact values; an unrecognized value is "
-        "rejected by the schema."
+        "rejected by the schema.\n\n"
+        + READER_FACING_GAPS
         + dossier_instruction(lane_key)
     )
 
@@ -1391,6 +1459,8 @@ def verification_prompt(record, selected_claims, failed_ledger, extra=""):
         "new evidence tied to a verdict. Report only claim IDs from SELECTED CLAIMS; "
         "ignore anything else. Selected IDs: "
         + repr(sorted(selected_ids))
+        + "\n\n"
+        + READER_FACING_GAPS
         + extra
     )
 
@@ -1466,7 +1536,14 @@ async def verify_stage(scout, item, index):
         return None
     lane_key = item["lane_key"]
     reported_path = str(scout.get("dossier_path", "")).strip()
-    record = new_record(scout, lane_key, str(item["lane"].get("id", "")), reported_path)
+    record = new_record(
+        scout,
+        lane_key,
+        str(item["lane"].get("id", "")),
+        reported_path,
+        str(item["lane"].get("title", "")),
+        str(item["lane"].get("question", "")),
+    )
     select_claims(record, verification_mode)
     if record["selected_claim_ids"] and budget_allows_optional():
         await verify_record(record, "verify:" + str(item["lane"].get("id")), lane_failed_ledger(record))
@@ -1543,6 +1620,8 @@ if (
             "escalation-1",
             "acquisition-escalation",
             str(esc_scout.get("dossier_path", "")).strip(),
+            "The escalated source",
+            str(escalation.get("question", "")),
         )
         select_claims(esc_record, verification_mode)
         if esc_record["selected_claim_ids"] and budget_allows_optional():
@@ -1607,12 +1686,27 @@ if run_coverage and research_records:
         + repr(evidence_gaps)
         + "\nFAILED ACQUISITIONS: "
         + repr(compact_failed_ledger(research_records))
-        + ("\n" + READ_INSTRUCTIONS if use_workspace else ""),
+        + ("\n" + READ_INSTRUCTIONS if use_workspace else "")
+        + "\n\n"
+        + READER_FACING_GAPS
+        + "\n\nReturn every field of the schema as its own value. Do not pack later "
+        "fields into the summary text; a record missing followup_needed, "
+        "section_drafting_needed, section_outline, or gaps is discarded.",
         "coverage",
         "Coverage",
         COVERAGE_SCHEMA,
         "audit",
     )
+    coverage_missing = missing_stage_keys(coverage, COVERAGE_ACTED_ON_KEYS) if coverage else []
+    if coverage_missing:
+        # Loud, not silent: the follow-up and drafting-shape decisions are lost.
+        degraded_stages.append("Coverage")
+        partial_reasons.append(
+            "the coverage stage returned an unusable record (missing "
+            + ", ".join(coverage_missing)
+            + "), so its follow-up and section decisions were discarded"
+        )
+        coverage = None
 else:
     stages_skipped.append("Coverage")
 
@@ -1649,6 +1743,8 @@ if (
             "followup-1",
             "followup",
             str(followup_scout_result.get("dossier_path", "")).strip(),
+            str(followup_lane.get("title", "")),
+            str(followup_lane.get("question", "")),
         )
         select_claims(followup_record, verification_mode)
         if followup_record["selected_claim_ids"] and budget_allows_optional():
@@ -1729,15 +1825,26 @@ single_draft_prompt = (
     + "\n\n"
     + STATUS_USE_MATRIX
 )
-section_outline = (coverage or {}).get("section_outline", [])
+coverage_outline = (coverage or {}).get("section_outline") or []
 section_outline = [
     section
-    for section in section_outline
+    for section in coverage_outline
     if isinstance(section, dict)
     and str(section.get("heading", "")).strip()
     and str(section.get("purpose", "")).strip()
 ]
 section_decision = bool((coverage or {}).get("section_drafting_needed", False))
+section_outline_source = "coverage" if len(section_outline) >= 2 else "none"
+
+# Honor the documented rule: a long report never falls back to one drafting call
+# just because coverage failed to supply a usable outline.
+if len(section_outline) < 2 and target_words >= 5000:
+    derived = derive_section_outline(research_records, citable_claims)
+    if len(derived) >= 2:
+        section_outline = derived
+        section_outline_source = "derived"
+        log("coverage supplied no usable section outline; derived one from the lanes")
+
 use_section_drafting = len(section_outline) >= 2 and (target_words >= 5000 or section_decision)
 draft_mode = "sections" if use_section_drafting else "single"
 
@@ -1856,6 +1963,14 @@ if use_section_drafting:
                 + repr(registry)
                 + "\nCONSEQUENTIAL GAPS: "
                 + repr(all_gaps)
+                + (
+                    "\n\nThese section boundaries were derived from research lanes, "
+                    "which are evidence boundaries rather than reader-facing argument "
+                    "boundaries. Rename, reorder, split, or merge the headings so the "
+                    "report reads as one argument, keeping every supported citation."
+                    if section_outline_source == "derived"
+                    else ""
+                )
             )
             seams = await dispatch(
                 seams_prompt, "draft-assembly", "Draft", SEAMS_SCHEMA, "synthesis"
@@ -1998,6 +2113,21 @@ else:
     audit_roles = []
 
 material_issues = list(deterministic_issues)
+
+# Length is part of the confirmed brief, so a large overshoot is a material issue
+# the single revision pass can act on. A shortfall is handled by the expansion
+# pass and reported as a gap rather than a defect.
+overlength_target = (
+    target_words * OVERLENGTH_RATIO_NUMERATOR
+) // OVERLENGTH_RATIO_DENOMINATOR
+if assembled_words and assembled_words > overlength_target:
+    material_issues.append(
+        "report is far longer than the requested length: "
+        + str(assembled_words)
+        + " words against a target of about "
+        + str(target_words)
+        + "; tighten it toward the target without dropping supported substance"
+    )
 
 if audit_roles:
     phase("Audit")
@@ -2178,13 +2308,24 @@ if high_stakes and remaining_material_issues:
 # ---------------------------------------------------------------------------
 advisory_issues = structural_issues(report) if report_plan is None else []
 
-# A length shortfall is a delivery warning, not an evidence defect: it is
-# surfaced in gaps and telemetry but never demotes the run or discards a report.
+# A shortfall is a delivery warning, not an evidence defect: the expansion pass
+# owns it, an honest short report still ships, and it never demotes the run. A
+# report still far over the target after revision is different — it disregards an
+# explicit instruction it was asked to fix, so it counts as unresolved.
 length_notes = []
+overlength_notes = []
 shortfall_target = (target_words * SHORTFALL_RATIO_NUMERATOR) // SHORTFALL_RATIO_DENOMINATOR
 if assembled_words and assembled_words < shortfall_target:
     length_notes.append(
         "report is materially shorter than the requested length: "
+        + str(assembled_words)
+        + " of about "
+        + str(target_words)
+        + " words"
+    )
+elif assembled_words and assembled_words > overlength_target:
+    overlength_notes.append(
+        "report is materially longer than the requested length: "
         + str(assembled_words)
         + " of about "
         + str(target_words)
@@ -2195,6 +2336,7 @@ unresolved = sorted(
     set(
         [str(issue) for issue in advisory_issues if issue]
         + [str(issue) for issue in remaining_material_issues if issue]
+        + overlength_notes
     )
 )
 gaps = sorted(set(all_gaps + partial_reasons + unresolved + length_notes))

@@ -197,10 +197,12 @@ default:
 After a workflow run, immediately use
 [`scripts/materialize_report.py`](scripts/materialize_report.py) with its
 `resultPath`. The materializer is the authoritative gate: it builds `## Sources`
-from the body, validates structure, appends a `## Scope and gaps` section for a
-partial result, and warns when the report is materially shorter than the confirmed
-target. Report any warning it prints. Finish with the report path and a short
-status; do not paste the full report again.
+from the body, validates structure, appends a sanitized `## Scope and gaps` section
+for a partial result, and warns when the delivered length departs from the confirmed
+target or a stage was degraded. Report any warning it prints, and check
+`run_summary.degraded_stages`: a degraded stage means a decision the run was supposed
+to make was discarded, which is worth telling the user about. Finish with the report
+path and a short status; do not paste the full report again.
 
 ### Keep intermediate work out of the project
 

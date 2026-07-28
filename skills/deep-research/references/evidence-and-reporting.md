@@ -318,7 +318,10 @@ full evidence ledgers into coverage and audit prompts. Pass the path instead.
 ### Drafting-shape decision
 
 The skill decides the drafting shape; do not ask the user to choose an
-implementation detail.
+implementation detail. A long report must never collapse back to a single drafting
+call merely because the stage that was supposed to propose an outline failed to
+return one; fall back to a deterministic outline and let the assembly pass turn it
+into reader-facing sections.
 
 Use one drafting agent by default. Use bounded section drafting when:
 
@@ -344,10 +347,12 @@ evidence-calibrated conclusion. A long report must not be re-emitted as one gian
 JSON string; that is the most truncation-prone shape available.
 
 Verify the delivered length against the target with `wc -w` rather than trusting an
-impression. A report materially shorter than the confirmed target gets one bounded
-expansion pass over its thinnest sections — adding evidence, mechanism, and concrete
-detail from the dossiers, never padding — and is then reassembled. One pass only: a
-short report that is honest still ships, with the shortfall disclosed.
+impression, and check both directions. A report materially shorter than the confirmed
+target gets one bounded expansion pass over its thinnest sections — adding evidence,
+mechanism, and concrete detail from the dossiers, never padding — and is then
+reassembled. One pass only: a short report that is honest still ships, with the
+shortfall disclosed. A report far longer than the target is a defect of a different
+kind: it disregarded the brief, so tighten it rather than disclosing it.
 
 ## 7. Reader-fit report contract
 
@@ -367,6 +372,13 @@ Keep uncertainty next to the affected claim. Consolidate secondary caveats inste
 of repeating "the accessible evidence is limited" in every section. Do not expose
 research lanes, worker names, evidence IDs, audit verdicts, or retry history unless
 the user explicitly asks for methods.
+
+That applies to recorded gaps too. A gap is read by a person, so name the missing
+evidence and why it matters — never a lane identifier, a claim or evidence ID, or the
+shape of an internal record. "Klibansky and Panofsky's study was reached only at
+second hand" is a disclosure; "lane-1/C11's second half needs the reception lanes" is
+leaked machinery. A reader-facing note is a short disclosure of what stayed
+unresolved, not a transcript of the research ledger.
 
 The user's requested format wins. Otherwise choose the closest profile below.
 

@@ -20,8 +20,17 @@ from typing import Any
 # Query parameters that never identify a distinct document.
 TRACKING_PARAMS = frozenset({"gclid", "fbclid", "ref", "ref_src", "s", "share"})
 
-# Fraction of the requested word target below which the report is flagged short.
+# Bounds on delivered length relative to the requested word target.
 SHORTFALL_RATIO = 0.8
+OVERLENGTH_RATIO = 1.35
+
+# Internal identifiers that must never reach a reader-facing gaps section.
+_INTERNAL_ID = re.compile(r"\b(?:lane-\d+|followup-\d+|escalation-\d+)(?:/[A-Za-z]+\d+)?\b")
+_BARE_RECORD_ID = re.compile(r"\b[CES]\d{1,3}\b")
+_INTERNAL_MARKERS = ("lane", "scout", "verifier", "claim_id", "evidence_id", "downstream")
+
+# A reader-facing note is a short disclosure, not a research ledger.
+MAX_READER_FACING_GAPS = 10
 
 
 class MaterializationError(ValueError):
@@ -308,9 +317,51 @@ def assemble_report(
     return report, cited_sources, issues
 
 
+def reader_facing_gaps(gaps: list[str], limit: int = MAX_READER_FACING_GAPS) -> list[str]:
+    """Filter workflow gaps down to disclosures a reader can actually use.
+
+    Workflow gaps are written for the operator and routinely carry internal claim
+    and lane identifiers. Strip those, drop entries that are still about research
+    machinery rather than evidence, and cap the list so a report ends with a short
+    disclosure instead of a research ledger.
+    """
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for gap in gaps:
+        text = str(gap).strip()
+        if not text:
+            continue
+        text = _INTERNAL_ID.sub("", text)
+        text = _BARE_RECORD_ID.sub("", text)
+        text = re.sub(r"\(\s*[,;'\"]*\s*\)", "", text)
+        text = re.sub(r"\s{2,}", " ", text).strip(" ,;:.—-")
+        if len(text) < 20:
+            continue
+        lowered = text.lower()
+        if any(marker in lowered for marker in _INTERNAL_MARKERS):
+            continue
+        if text[0].islower():
+            text = text[0].upper() + text[1:]
+        if not text.endswith("."):
+            text += "."
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+
+    kept = cleaned[:limit]
+    overflow = len(cleaned) - len(kept)
+    if overflow > 0:
+        kept.append(
+            f"{overflow} further sourcing gaps are recorded in the research notes for this report."
+        )
+    return kept
+
+
 def insert_gaps_section(report: str, gaps: list[str]) -> str:
     """Insert a ``## Scope and gaps`` section ahead of ``## Sources``."""
-    entries = [str(gap).strip() for gap in gaps if str(gap).strip()]
+    entries = reader_facing_gaps(gaps)
     if not entries:
         return report
     block = "## Scope and gaps\n\nThis report is a supported partial result. The "
@@ -370,7 +421,8 @@ def _registry(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def _word_shortfall_warning(payload: dict[str, Any], report: str) -> str | None:
+def _word_budget_warning(payload: dict[str, Any], report: str) -> str | None:
+    """Warn when the delivered length departs materially from the confirmed target."""
     summary = payload.get("run_summary")
     if not isinstance(summary, dict):
         return None
@@ -378,9 +430,23 @@ def _word_shortfall_warning(payload: dict[str, Any], report: str) -> str | None:
     if not isinstance(target, int) or isinstance(target, bool) or target <= 0:
         return None
     words = len(strip_sources_section(report).split())
-    if words >= int(target * SHORTFALL_RATIO):
+    if words < int(target * SHORTFALL_RATIO):
+        return f"report is short: {words} words against a requested target of about {target}"
+    if words > int(target * OVERLENGTH_RATIO):
+        return f"report is long: {words} words against a requested target of about {target}"
+    return None
+
+
+def _degraded_stage_warning(payload: dict[str, Any]) -> str | None:
+    """Surface stages whose structured output was unusable."""
+    summary = payload.get("run_summary")
+    if not isinstance(summary, dict):
         return None
-    return f"report is {words} words against a requested target of about {target}"
+    degraded = summary.get("degraded_stages")
+    if not isinstance(degraded, list) or not degraded:
+        return None
+    names = ", ".join(str(stage) for stage in degraded)
+    return f"one or more stages returned an unusable record and were skipped: {names}"
 
 
 def resolve_report(payload: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
@@ -458,9 +524,9 @@ def materialize_report(
     report, status, _cited = resolve_report(payload)
 
     warnings: list[str] = []
-    shortfall = _word_shortfall_warning(payload, report)
-    if shortfall:
-        warnings.append(shortfall)
+    for warning in (_word_budget_warning(payload, report), _degraded_stage_warning(payload)):
+        if warning:
+            warnings.append(warning)
 
     if status == "partial":
         gaps = [str(gap) for gap in payload.get("gaps", []) if str(gap).strip()]

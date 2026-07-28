@@ -307,6 +307,8 @@ The workflow returns a compact object:
     "followups_run": 0,
     "escalations_run": 0,
     "draft_mode": "single | sections",
+    "section_outline_source": "coverage | derived | none",
+    "degraded_stages": [],
     "target_words": 3000,
     "assembled_word_count": 3120,
     "expansion_passes": 0,
@@ -315,6 +317,20 @@ The workflow returns a compact object:
   }
 }
 ```
+
+`degraded_stages` names any stage whose structured output was unusable. Structured
+output occasionally degenerates — for example collapsing every later field into the
+first string field — leaving a dict that passes an isinstance check while carrying
+none of the decisions the stage was asked for. The workflow checks the keys it
+actually acts on, discards such a record, records the stage here, and names it in
+`gaps`. It never proceeds as though the stage had simply chosen the default, because
+that silently loses a requested follow-up or a section outline.
+
+`section_outline_source` records where the drafting outline came from. When the
+target is 5,000 words or more and coverage supplied no usable outline, the workflow
+derives one from the lanes rather than forcing a long report through a single
+drafting call, and tells the assembly stage to rename and reorder those headings —
+lanes are evidence boundaries, not reader-facing argument boundaries.
 
 Either `report_markdown` or `report_plan` carries the report. A long, section-drafted
 report is assembled in a scratchpad file rather than squeezed through one
@@ -325,7 +341,17 @@ bibliography can be rebuilt deterministically.
 `status` is `failed` only when no report exists at all — a failed drafting worker,
 or no claim set that can sustain a cited report. A drafted report with residual
 structural or material issues is returned as `partial` with those issues in `gaps`.
-A length shortfall is reported in `gaps` and telemetry but never blocks delivery.
+
+Length is treated asymmetrically, because the two failures mean different things. A
+shortfall is owned by the expansion pass and reported in `gaps` without blocking
+delivery: an honest short report is still worth having. A report more than about
+1.35× the target is a material issue handed to the revision pass to tighten, and if
+it survives that pass the run is marked `partial` — it disregarded an explicit
+instruction it was asked to fix.
+
+Gaps in the result are written for the operator and may be numerous. Workers are
+instructed to phrase them for a reader, and the materializer sanitises and caps them
+before any of them reach the report.
 
 Raw scout, verifier, coverage, and audit outputs remain visible in normal workflow
 artifacts and are not copied into the final result.
@@ -344,11 +370,14 @@ Use the available Python 3.11+ interpreter; do not assume the executable is lite
 target.
 
 The materializer is the authoritative gate. It owns Markdown link extraction, URL
-identity, `## Sources` construction, and structural validation; it reads
-`report_plan.body_path` when present; it appends a `## Scope and gaps` section for a
-partial result; and it warns when the delivered report is materially shorter than
-the requested target. It refuses to write anything for a `failed` result or an
-unreadable body file.
+identity, `## Sources` construction, and structural validation, and it reads
+`report_plan.body_path` when present. For a partial result it appends a
+`## Scope and gaps` section, first stripping internal lane and claim identifiers,
+dropping entries that are about research machinery rather than evidence, and capping
+the list so the report ends with a short disclosure instead of a research ledger. It
+warns when the delivered length departs materially from the target in either
+direction, and when any stage was degraded. It refuses to write anything for a
+`failed` result or an unreadable body file.
 
 ## Resume and failure handling
 

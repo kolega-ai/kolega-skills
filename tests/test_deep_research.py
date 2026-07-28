@@ -315,6 +315,9 @@ class FakeWorkflowHarness:
         revision_remaining_issues: list[str] | None = None,
         omit_dossier_paths: bool = False,
         omit_section_paths: bool = False,
+        coverage_override: dict[str, Any] | None = None,
+        draft_word_padding: int = 0,
+        revision_keeps_padding: bool = False,
     ) -> None:
         self.args = args
         self.followup_needed = followup_needed
@@ -330,6 +333,9 @@ class FakeWorkflowHarness:
         self.revision_remaining_issues = list(revision_remaining_issues or [])
         self.omit_dossier_paths = omit_dossier_paths
         self.omit_section_paths = omit_section_paths
+        self.coverage_override = coverage_override
+        self.draft_word_padding = draft_word_padding
+        self.revision_keeps_padding = revision_keeps_padding
         self.calls: list[dict[str, Any]] = []
         self.phases: list[str] = []
 
@@ -385,6 +391,8 @@ class FakeWorkflowHarness:
                 return self.verifier_overrides[lane_id]
             return self._verification(lane_id)
         if label == "coverage":
+            if self.coverage_override is not None:
+                return self.coverage_override
             target_words = self.args["report_profile"]["target_words"]
             section_needed = (
                 target_words >= 5_000
@@ -472,13 +480,14 @@ class FakeWorkflowHarness:
         if label == "draft":
             first_lane = self.args["lanes"][0]["id"]
             url = f"https://example.test/{first_lane}"
+            padding = ("filler " * self.draft_word_padding).strip()
             return {
                 "title": "A Specific Reader-Fit Report",
                 "body_markdown": (
                     f"The evidence establishes the main answer through a "
                     f"[primary source]({url}).\n\n"
                     "## What changed\n\n"
-                    "The supported record supports a concise conclusion."
+                    f"The supported record supports a concise conclusion. {padding}".strip()
                 ),
                 "gaps": [],
             }
@@ -499,11 +508,16 @@ class FakeWorkflowHarness:
         if label == "revision":
             first_lane = self.args["lanes"][0]["id"]
             url = f"https://example.test/{first_lane}"
+            # A revision tightens by default; revision_keeps_padding models one
+            # that fails to.
+            padding = (
+                ("filler " * self.draft_word_padding).strip() if self.revision_keeps_padding else ""
+            )
             return {
                 "title": "A Specific Reader-Fit Report",
                 "body_markdown": (
                     f"The revised answer cites a [primary source]({url}).\n\n"
-                    "## What changed\n\nThe supported conclusion remains."
+                    f"## What changed\n\nThe supported conclusion remains. {padding}".strip()
                 ),
                 "remaining_material_issues": list(self.revision_remaining_issues),
             }
@@ -2088,6 +2102,206 @@ class LongReportAssemblyTests(unittest.TestCase):
         self.assertEqual(result["report_markdown"].count("\n## Sources\n"), 1)
 
 
+class DegradedStageTests(unittest.TestCase):
+    """A stage whose structured output degenerates must fail loudly, not quietly."""
+
+    @staticmethod
+    def degenerate_coverage() -> dict[str, Any]:
+        """Reproduces an observed failure: later fields packed into `summary`."""
+        return {
+            "summary": (
+                "At 6000 words with independent periods, section drafting is warranted."
+                "\n<followup_needed>true</followup_needed>"
+                '\n<section_outline>[{"heading": "One", "purpose": "p", "claim_ids": []}]'
+                "</section_outline>"
+            )
+        }
+
+    def long_args(self) -> dict[str, Any]:
+        args = workflow_args()
+        args["report_profile"]["length"] = "detailed"
+        args["report_profile"]["target_words"] = 6_000
+        args["writing_reserve_tokens"] = 18_000
+        return args
+
+    def test_unusable_coverage_is_reported_and_its_decisions_discarded(self) -> None:
+        harness = FakeWorkflowHarness(self.long_args(), followup_needed=True)
+        harness.coverage_override = self.degenerate_coverage()
+        result = asyncio.run(execute_workflow(harness))
+
+        rs = result["run_summary"]
+        self.assertIn("Coverage", rs["degraded_stages"])
+        self.assertEqual(result["status"], "partial")
+        self.assertTrue(
+            any("coverage stage returned an unusable record" in gap for gap in result["gaps"]),
+            result["gaps"],
+        )
+        # The follow-up it asked for is not silently performed.
+        self.assertEqual(rs["followups_run"], 0)
+        self.assertFalse(any(c["label"].startswith("followup:") for c in harness.calls))
+
+    def test_long_report_still_gets_sections_from_a_derived_outline(self) -> None:
+        args = self.long_args()
+        args["workspace"] = scratchpad_workspace("derived-outline")
+        harness = FakeWorkflowHarness(args, section_word_count=1_500)
+        harness.coverage_override = self.degenerate_coverage()
+        result = asyncio.run(execute_workflow(harness))
+
+        rs = result["run_summary"]
+        self.assertEqual(rs["section_outline_source"], "derived")
+        self.assertEqual(rs["draft_mode"], "sections")
+        self.assertIsNotNone(result["report_plan"])
+        # One section per lane that produced citable claims.
+        self.assertEqual(len(result["report_plan"]["section_paths"]), 3)
+        seams = next(c["prompt"] for c in harness.calls if c["label"] == "draft-assembly")
+        self.assertIn("derived from research lanes", seams)
+
+    def test_healthy_coverage_is_not_flagged_and_owns_the_outline(self) -> None:
+        args = self.long_args()
+        args["workspace"] = scratchpad_workspace("healthy-coverage")
+        harness = FakeWorkflowHarness(args, section_word_count=1_500)
+        result = asyncio.run(execute_workflow(harness))
+
+        rs = result["run_summary"]
+        self.assertEqual(rs["degraded_stages"], [])
+        self.assertEqual(rs["section_outline_source"], "coverage")
+        self.assertEqual(rs["draft_mode"], "sections")
+
+    def test_short_report_does_not_derive_an_outline(self) -> None:
+        harness = FakeWorkflowHarness(workflow_args())
+        harness.coverage_override = self.degenerate_coverage()
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["run_summary"]["section_outline_source"], "none")
+        self.assertEqual(result["run_summary"]["draft_mode"], "single")
+
+    def test_workers_are_told_to_write_reader_facing_gaps(self) -> None:
+        harness = FakeWorkflowHarness(workflow_args())
+        asyncio.run(execute_workflow(harness))
+        for label in ("scout:lane-1", "verify:lane-1", "coverage"):
+            with self.subTest(label=label):
+                prompt = next(c["prompt"] for c in harness.calls if c["label"] == label)
+                self.assertIn("State every gap in reader-facing language", prompt)
+
+
+class LengthBudgetTests(unittest.TestCase):
+    """Both directions of the confirmed word target are enforced."""
+
+    def test_overlong_draft_is_sent_to_revision_to_be_tightened(self) -> None:
+        args = workflow_args()  # target 3000 -> overlength threshold 4050
+        harness = FakeWorkflowHarness(args, draft_word_padding=6_000)
+        result = asyncio.run(execute_workflow(harness))
+
+        revision = [c for c in harness.calls if c["label"] == "revision"]
+        self.assertEqual(len(revision), 1)
+        self.assertIn("far longer than the requested length", revision[0]["prompt"])
+        self.assertIn("words against a target of about 3000", revision[0]["prompt"])
+        # The revision tightened it, so no overlength gap survives.
+        self.assertFalse(any("materially longer" in gap for gap in result["gaps"]))
+
+    def test_overlength_survives_as_a_gap_when_revision_does_not_tighten(self) -> None:
+        args = workflow_args()
+        harness = FakeWorkflowHarness(args, draft_word_padding=6_000, revision_keeps_padding=True)
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertTrue(
+            any("materially longer than the requested length" in gap for gap in result["gaps"]),
+            result["gaps"],
+        )
+        self.assertEqual(result["status"], "partial")
+
+    def test_on_target_report_triggers_no_revision(self) -> None:
+        args = workflow_args()
+        harness = FakeWorkflowHarness(args, draft_word_padding=2_900)
+        result = asyncio.run(execute_workflow(harness))
+
+        self.assertEqual(result["status"], "complete")
+        self.assertFalse(any(c["label"] == "revision" for c in harness.calls))
+        self.assertFalse(any("longer than the requested" in gap for gap in result["gaps"]))
+
+
+class ReaderFacingGapsTests(unittest.TestCase):
+    """Operator-facing gaps are sanitised before reaching a reader."""
+
+    def test_internal_identifiers_are_stripped_or_dropped(self) -> None:
+        raw = [
+            "lane-1/C11's second half requires evidence from the later lanes.",
+            "Klibansky, Panofsky and Saxl's Saturn and Melancholy was reached only at "
+            "second hand, through two summarising sources.",
+            "C6's self-dating rests on a single tertiary source (lane-2/C6).",
+            "   ",
+            "Short.",
+        ]
+        cleaned = MATERIALIZER.reader_facing_gaps(raw)
+
+        joined = " ".join(cleaned)
+        self.assertNotIn("lane-", joined)
+        self.assertNotIn("C11", joined)
+        self.assertNotIn("C6", joined)
+        # The genuine, reader-useful disclosure survives intact.
+        self.assertTrue(any("Saturn and Melancholy" in gap for gap in cleaned))
+        # Entries that were only about research machinery are dropped.
+        self.assertFalse(any("later lanes" in gap for gap in cleaned))
+
+    def test_long_gap_lists_are_capped_with_an_overflow_note(self) -> None:
+        raw = [
+            f"A distinct archival series numbered {index} stayed inaccessible."
+            for index in range(25)
+        ]
+        cleaned = MATERIALIZER.reader_facing_gaps(raw)
+
+        self.assertEqual(len(cleaned), MATERIALIZER.MAX_READER_FACING_GAPS + 1)
+        self.assertIn("15 further sourcing gaps", cleaned[-1])
+
+    def test_partial_report_gaps_section_is_reader_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload = {
+                "status": "partial",
+                "report_markdown": (
+                    "# T\n\nBody with a [claim](https://example.test/s).\n\n"
+                    "## Sources\n\n- [S](https://example.test/s)\n"
+                ),
+                "cited_sources": [],
+                "gaps": [
+                    "lane-3/C4 could not be corroborated by any second source.",
+                    "Ellic Howe's documentary case that the correspondence was fabricated "
+                    "was never obtained.",
+                ],
+            }
+            result = root / "result.json"
+            result.write_text(json.dumps(payload), encoding="utf-8")
+            output = root / "partial.md"
+
+            MATERIALIZER.materialize_report(result, output)
+            written = output.read_text(encoding="utf-8")
+
+            self.assertIn("## Scope and gaps", written)
+            self.assertIn("Ellic Howe", written)
+            self.assertNotIn("lane-3", written)
+            self.assertNotIn("C4", written)
+
+    def test_degraded_stage_produces_a_materializer_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload = {
+                "status": "partial",
+                "report_markdown": (
+                    "# T\n\nBody with a [claim](https://example.test/s).\n\n"
+                    "## Sources\n\n- [S](https://example.test/s)\n"
+                ),
+                "cited_sources": [],
+                "gaps": [],
+                "run_summary": {"degraded_stages": ["Coverage"]},
+            }
+            result = root / "result.json"
+            result.write_text(json.dumps(payload), encoding="utf-8")
+
+            _, _, warnings = MATERIALIZER.materialize_report(result, root / "out.md")
+
+            self.assertTrue(any("unusable record" in w for w in warnings), warnings)
+
+
 class RouteAndIdentityContractTests(unittest.TestCase):
     def test_malformed_routes_fail_before_dispatch(self) -> None:
         cases = [
@@ -2221,6 +2435,15 @@ class DocumentedBehaviourTests(unittest.TestCase):
             "unverified",
         ):
             self.assertIn(status, self.evidence_guide)
+
+    def test_degradation_and_length_behaviour_are_documented(self) -> None:
+        self.assertIn("degraded_stages", self.workflow_guide)
+        self.assertIn("degraded_stages", self.skill)
+        self.assertIn("section_outline_source", self.workflow_guide)
+        self.assertIn("1.35", self.workflow_guide)
+        # Gaps must be reader-facing, and that rule is written down.
+        self.assertIn("leaked machinery", self.evidence_guide)
+        self.assertIn("Scope and gaps", self.workflow_guide)
 
     def test_sequential_fallback_uses_scratchpad_files(self) -> None:
         fallback = self.skill.split("### Sequential fallback", 1)[1]
