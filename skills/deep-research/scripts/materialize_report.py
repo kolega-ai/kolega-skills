@@ -32,6 +32,75 @@ _INTERNAL_MARKERS = ("lane", "scout", "verifier", "claim_id", "evidence_id", "do
 # A reader-facing note is a short disclosure, not a research ledger.
 MAX_READER_FACING_GAPS = 10
 
+# Content-word overlap above which two gaps are treated as the same disclosure.
+# Scouts and verifiers routinely report one gap in different words.
+NEAR_DUPLICATE_OVERLAP = 0.6
+# ...but boilerplate alone must never merge two distinct gaps, so also require a
+# floor of shared distinctive words.
+NEAR_DUPLICATE_MIN_SHARED = 4
+# Duplicated gaps almost always open on the same subject ("Agrippa's table of
+# Saturn...", "Ficino's chapters on engraved images..."), which distinguishes them
+# from two unrelated gaps that merely share stock phrasing.
+GAP_SUBJECT_WORDS = 6
+GAP_SUBJECT_MIN_SHARED = 4
+
+# Vocabulary common to almost every sourcing gap; useless for telling two apart.
+_GAP_BOILERPLATE = frozenset(
+    {
+        "about",
+        "accessible",
+        "also",
+        "available",
+        "because",
+        "been",
+        "checked",
+        "claim",
+        "claims",
+        "consulted",
+        "could",
+        "directly",
+        "established",
+        "evidence",
+        "failed",
+        "from",
+        "have",
+        "here",
+        "inaccessible",
+        "into",
+        "known",
+        "located",
+        "never",
+        "obtained",
+        "only",
+        "read",
+        "reached",
+        "recovered",
+        "remain",
+        "remains",
+        "report",
+        "rests",
+        "scholarship",
+        "secured",
+        "settled",
+        "source",
+        "sources",
+        "still",
+        "than",
+        "that",
+        "their",
+        "them",
+        "there",
+        "then",
+        "this",
+        "unverified",
+        "verified",
+        "were",
+        "which",
+        "with",
+        "would",
+    }
+)
+
 
 class MaterializationError(ValueError):
     """Raised when a workflow result cannot be materialized safely."""
@@ -317,16 +386,63 @@ def assemble_report(
     return report, cited_sources, issues
 
 
+def _distinctive_words(text: str) -> list[str]:
+    return [
+        word
+        for word in re.findall(r"[a-z']+", text.lower())
+        if len(word) > 3 and word not in _GAP_BOILERPLATE
+    ]
+
+
+def _gap_signature(text: str) -> set[str]:
+    """Distinctive words used to recognize the same gap phrased two ways."""
+    return set(_distinctive_words(text))
+
+
+def _gap_subject(text: str) -> set[str]:
+    """The distinctive words that open a gap, i.e. what it is about."""
+    return set(_distinctive_words(text)[:GAP_SUBJECT_WORDS])
+
+
+def _near_duplicate_index(
+    signature: set[str],
+    subject: set[str],
+    existing: list[tuple[set[str], set[str]]],
+) -> int | None:
+    """Index of an already-kept gap that says substantially the same thing.
+
+    Two gaps merge when they open on the same subject, or when their distinctive
+    vocabulary overlaps heavily. The bar is deliberately conservative: showing one
+    disclosure twice is a cosmetic wart, whereas merging two distinct gaps hides a
+    limitation from the reader.
+    """
+    if len(signature) < NEAR_DUPLICATE_MIN_SHARED:
+        return None
+    for index, (other_signature, other_subject) in enumerate(existing):
+        if len(subject & other_subject) >= GAP_SUBJECT_MIN_SHARED:
+            return index
+        if len(other_signature) < NEAR_DUPLICATE_MIN_SHARED:
+            continue
+        shared = signature & other_signature
+        if len(shared) < NEAR_DUPLICATE_MIN_SHARED:
+            continue
+        if len(shared) / min(len(signature), len(other_signature)) >= NEAR_DUPLICATE_OVERLAP:
+            return index
+    return None
+
+
 def reader_facing_gaps(gaps: list[str], limit: int = MAX_READER_FACING_GAPS) -> list[str]:
     """Filter workflow gaps down to disclosures a reader can actually use.
 
     Workflow gaps are written for the operator and routinely carry internal claim
-    and lane identifiers. Strip those, drop entries that are still about research
-    machinery rather than evidence, and cap the list so a report ends with a short
-    disclosure instead of a research ledger.
+    and lane identifiers, and the same gap often arrives several times in slightly
+    different words. Strip the identifiers, drop entries that are about research
+    machinery rather than evidence, collapse near-duplicates to their fullest
+    wording, and cap the list so a report ends with a short disclosure instead of a
+    research ledger.
     """
     cleaned: list[str] = []
-    seen: set[str] = set()
+    fingerprints: list[tuple[set[str], set[str]]] = []
     for gap in gaps:
         text = str(gap).strip()
         if not text:
@@ -344,10 +460,16 @@ def reader_facing_gaps(gaps: list[str], limit: int = MAX_READER_FACING_GAPS) -> 
             text = text[0].upper() + text[1:]
         if not text.endswith("."):
             text += "."
-        key = text.lower()
-        if key in seen:
+        signature = _gap_signature(text)
+        subject = _gap_subject(text)
+        duplicate = _near_duplicate_index(signature, subject, fingerprints)
+        if duplicate is not None:
+            # Keep whichever phrasing tells the reader more.
+            if len(text) > len(cleaned[duplicate]):
+                cleaned[duplicate] = text
+                fingerprints[duplicate] = (signature, subject)
             continue
-        seen.add(key)
+        fingerprints.append((signature, subject))
         cleaned.append(text)
 
     kept = cleaned[:limit]

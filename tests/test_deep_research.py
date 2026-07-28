@@ -2243,15 +2243,69 @@ class ReaderFacingGapsTests(unittest.TestCase):
         # Entries that were only about research machinery are dropped.
         self.assertFalse(any("later lanes" in gap for gap in cleaned))
 
-    def test_long_gap_lists_are_capped_with_an_overflow_note(self) -> None:
+    def test_near_duplicate_gaps_collapse_to_the_fullest_wording(self) -> None:
         raw = [
-            f"A distinct archival series numbered {index} stayed inaccessible."
-            for index in range(25)
+            "Agrippa's table of Saturn is quoted from a page fragment, so the spirit "
+            "names and metal are incompletely attested.",
+            "Agrippa's table of Saturn survives here only as a page fragment: the spirit "
+            "names, the metal, and the promised effects are incompletely attested, and "
+            "whether he later retracted the material was never established.",
+            "Engraved gems and curse tablets naming Kronos were never surveyed because "
+            "the searches failed.",
         ]
         cleaned = MATERIALIZER.reader_facing_gaps(raw)
 
+        self.assertEqual(len(cleaned), 2)
+        # The fuller Agrippa phrasing wins.
+        agrippa = next(gap for gap in cleaned if "Agrippa" in gap)
+        self.assertIn("whether he later retracted", agrippa)
+        self.assertTrue(any("Engraved gems" in gap for gap in cleaned))
+
+    def test_distinct_gaps_are_not_collapsed(self) -> None:
+        raw = [
+            "Ficino's chapters on engraved images could not be read directly.",
+            "The Golden Dawn's Saturn ritual was never located in a primary text.",
+            "Segal remains the only witness for the Harranian temple description.",
+        ]
+        self.assertEqual(len(MATERIALIZER.reader_facing_gaps(raw)), 3)
+
+    def test_long_gap_lists_are_capped_with_an_overflow_note(self) -> None:
+        subjects = [
+            "Ptolemy's Tetrabiblos death attributions",
+            "Vettius Valens on Saturn significations",
+            "Firmicus Maternus on planetary temperament",
+            "the Harranian temple architecture",
+            "Ibn Wahshiyya's agronomy digressions",
+            "the Castilian intermediary manuscript",
+            "Albertus Magnus on permitted images",
+            "Ficino's Apologia of 1489",
+            "Agrippa's retraction in De vanitate",
+            "Duerer's engraving iconography",
+            "Barrett's Magus and its plates",
+            "Levi's astral light doctrine",
+            "the Sprengel correspondence forgery case",
+            "Crowley's Liber 777 tables",
+            "the Berlin lodge initiation grades",
+        ]
+        raw = [f"Scholarship on {subject} could not be consulted." for subject in subjects]
+        cleaned = MATERIALIZER.reader_facing_gaps(raw)
+
         self.assertEqual(len(cleaned), MATERIALIZER.MAX_READER_FACING_GAPS + 1)
-        self.assertIn("15 further sourcing gaps", cleaned[-1])
+        self.assertRegex(cleaned[-1], r"^\d+ further sourcing gaps are recorded")
+        # Shared boilerplate must not merge gaps about different subjects.
+        self.assertGreaterEqual(len(MATERIALIZER.reader_facing_gaps(raw, limit=99)), 13)
+
+    def test_reworded_variants_of_one_gap_collapse(self) -> None:
+        """The same gap reported by a scout and a verifier appears once."""
+        raw = [
+            "Ficino's own chapters on engraved images in Book III of De vita were "
+            "unreadable, so whether he prescribed a Saturn talisman cannot be settled.",
+            "Ficino's own chapters on engraved images in the third book of De vita — the "
+            "passages where he sets out what figures astrologers carve, and whether he "
+            "endorses them — could not be read directly.",
+        ]
+        cleaned = MATERIALIZER.reader_facing_gaps(raw)
+        self.assertEqual(len(cleaned), 1)
 
     def test_partial_report_gaps_section_is_reader_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
