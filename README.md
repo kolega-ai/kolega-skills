@@ -13,6 +13,7 @@ and adds repository-level validation, deterministic packaging, tests, and CI.
 | --- | --- |
 | [`deep-research`](skills/deep-research/SKILL.md) | Complex multi-source investigation, claim-level verification, and citation-backed synthesis—not ordinary lookups or search-result lists |
 | [`docx`](skills/docx/SKILL.md) | Creating, inspecting, editing, converting, and rendering Microsoft Word `.docx` documents, including PDF export and PNG page rendering for visual review |
+| [`humanizer`](skills/humanizer/SKILL.md) | Rewriting supplied prose to remove formulaic AI-writing patterns while preserving facts, tone, and voice |
 | [`pdf`](skills/pdf/SKILL.md) | PDF-native extraction, creation, rendering, page operations, forms, security, redaction, conversion, explicit OCR routing, and searchable-PDF composition |
 | [`pptx`](skills/pptx/SKILL.md) | Building, inspecting, editing, and converting Microsoft PowerPoint `.pptx` presentations |
 | [`review`](skills/review/SKILL.md) | Reviewing pull requests, local changes, or branch diffs, with help and optional GitHub comments |
