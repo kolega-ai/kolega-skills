@@ -1,514 +1,499 @@
-# Evidence and reporting contract
+# Evidence and reporting
 
-Use this reference to design the research brief, evidence lanes, structured worker
-outputs, citations, audits, and long-report sections.
+Use this reference to keep deep research rigorous without turning every report into
+an institutional audit. The evidence rules are fixed; the report's structure and
+voice are reader-dependent.
 
-## Contents
+## Briefing and source planning
 
-- [Research brief](#research-brief)
-- [Conceptual lanes](#conceptual-lanes)
-- [Choose sources for the claim](#choose-sources-for-the-claim)
-- [Structured records](#structured-records)
-- [Evidence interpretation](#evidence-interpretation)
-- [Citation checks](#citation-checks)
-- [Section-based reporting](#section-based-reporting)
-- [Default report contract](#default-report-contract)
-- [Failure and degradation](#failure-and-degradation)
+Topic-specific intake questions should change what is researched, not serve as
+procedural form-filling. Before assigning source classes to lanes, use the answers
+from intake to narrow scope and select evidence:
 
-## Research brief
+- **Scope answer** sets the timeframe, jurisdiction, geography, or comparison set
+  for every lane, eliminating irrelevant source classes before acquisition begins.
+- **Interpretive-lens question** (historical/cultural) targets primary texts,
+  scholarly commentary, and reception records rather than news sources.
+- **Options/constraints question** (product/market) determines whether technical
+  documentation, independent benchmarks, or regulatory filings belong in scope.
+- **Jurisdiction/decision question** (disputed/high-stakes) specifies which legal,
+  clinical, or policy evidence applies and at what threshold.
+- **Communities/period question** (experiential/community) identifies the platforms,
+  forums, or archival sources appropriate for lived-experience evidence.
+- **Audience and use answer** calibrates evidence depth: a practitioner audience
+  may need primary or technical sources where a general audience benefits from
+  authoritative synthesis.
 
-Keep the brief compact enough to include in every research worker prompt.
+Treat intake as a research-design step. If the topic-specific answers do not change
+any lane boundary, source class, or evidence standard, the questions were not
+specific enough.
 
-```text
-ResearchBrief
-- question
-- intended_use
-- audience
-- as_of_date
-- timeframe
-- geography_or_context
-- scope:
-    include[]
-    exclude[]
-- definitions[]
-- source_policy:
-    required[]
-    preferred[]
-    prohibited[]
-    access_constraints[]
-- output:
-    format
-    target_length
-    target_words
-    required_sections[]
-    citation_style
-    requested_path
-- assumptions[]
-- effort_tier: focused | standard | extended
-- drafting_mode: single | sectioned
-- lanes[]
-```
+## 1. Build claims from evidence
 
-Separate hard constraints from preferences. "Use only these archives" is a constraint;
-"prefer interviews" is a preference. Preserve the user's wording when a subtle distinction
-could affect the answer.
+Separate four layers:
 
-## Conceptual lanes
+1. **Source** — who published the material, when, and under what incentives.
+2. **Evidence** — the specific passage, datum, observation, or record.
+3. **Claim** — the proposition that the evidence supports.
+4. **Inference** — the analyst's interpretation that joins multiple claims.
 
-A lane owns a separable part of the question, not a prestige class of sources.
+Record evidence atomically. One evidence record should support one proposition and
+name the source URL that can be cited. Do not use an entire document as if every
+claim in it had been verified.
 
-```text
-Lane
-- lane_id
-- subquestion
-- contribution_to_answer
-- scope_boundaries[]
-- key_terms_or_entities[]
-- query_seeds[]
-- useful_evidence_types[]
-- disconfirming_angle
-- completion_signals[]
-```
+For each candidate claim, record:
 
-Good lane sets divide the subject by mechanism, period, stakeholder, jurisdiction,
-experience, decision criterion, or disputed proposition. They minimize duplication while
-allowing evidence from different kinds of sources inside each lane.
+- stable lane-local claim and evidence IDs;
+- claim text;
+- evidence IDs;
+- importance: `background`, `supporting`, or `conclusion-driving`;
+- whether the claim is disputed, surprising, or high-stakes; and
+- a short qualification when support is partial.
 
-Examples:
+The reader-facing report must never expose internal IDs.
 
-- A product comparison might use capabilities, daily workflows, failure modes, economics,
-  and community maintenance.
-- A cultural history might use origins, participant practices, platform changes, creator
-  perspectives, internal disagreements, and outside reception.
-- A policy question might use the rule itself, implementation, affected groups, observed
-  outcomes, criticism, and unresolved cases.
+### Classify claims with the exact enum values
 
-Require a disconfirming angle when the work is evaluative, contested, high-stakes, or likely
-to inherit the framing of one source. A descriptive lane need not manufacture controversy.
+`claim_type` and `verification_triggers` are schema enums. They decide what gets
+verified, so an invented value is rejected outright rather than silently changing
+behavior:
 
-## Choose sources for the claim
+| `claim_type` | Use for |
+| --- | --- |
+| `external_fact` | a checkable fact about the world |
+| `quantitative` | a number, rate, magnitude, or trend |
+| `causal` | an assertion that one thing produced another |
+| `comparative` | a ranking or "more/less than" judgment |
+| `attributed_report` | what a named source said, did, or experienced |
+| `interpretation` | an analytic or scholarly reading of material |
 
-There is no universal source ladder. Choose evidence by what it can observe and establish.
+| `verification_triggers` | Use when |
+| --- | --- |
+| `known_dispute` | credible sources are known to disagree |
+| `cross_source_conflict` | this lane's own sources conflict |
+| `scope_risk` | the sample, jurisdiction, or period may not match the claim |
+| `source_access_uncertain` | the supporting source may not stay reachable |
+| `high_stakes` | a wrong answer here carries real cost |
 
-| Claim being investigated | Often useful evidence | Scope and failure checks |
+`attributed_report` and `interpretation` are the only types that opt out of
+verification, and only when the claim is neither disputed nor conclusion-driving.
+Testimony that carries the argument still gets checked. A claim whose type is
+absent falls back to the conservative rule — verify it if it is
+conclusion-driving or disputed — so a mislabeled claim is never skipped.
+
+### Claim statuses
+
+Verification assigns each claim exactly one status, and the drafter is bound by it:
+
+| Status | Meaning | Drafting |
 | --- | --- | --- |
-| A rule, commitment, release, price, or specification | Governing text, contract, changelog, first-party announcement, archived page | Check version, jurisdiction, effective date, and whether observed behavior matches the statement |
-| Measured prevalence, performance, or change | Dataset, benchmark, survey, analytics, transparent experiment, reproducible observation | Inspect definitions, sample, missing data, incentives, and whether the measure fits the claim |
-| Real product behavior | Documentation, source code, issue tracker, support thread, practitioner test, review, failure report | Separate intended behavior from observed behavior; record version and environment |
-| A community's norms or internal language | Participant posts, community archives, forums, creator material, moderation records, interviews | Sample more than the loudest voices; avoid turning participation into population prevalence |
-| A person's or group's experience | First-person account, interview, diary, testimony, ethnography, direct observation | Attribute the experience; do not generalize beyond the evidence without broader support |
-| Public reaction or sentiment | Deliberately sampled posts, comments, forums, surveys, audience analytics | State sampling limits, platform effects, deleted content, brigading, and demographic uncertainty |
-| An emerging practice or trend | Practitioner reports, repositories, newsletters, social posts, podcasts, event talks, job posts, usage data | Distinguish novelty from durable adoption and repetition from independent uptake |
-| Historical sequence or interpretation | Contemporary records, archives, oral histories, later accounts, specialist analysis | Separate events from later memory; surface date conflicts and retrospective framing |
-| A recommendation | Evidence about the user's actual criteria: specs, practical use, costs, failure modes, community experience, alternatives | Make the value judgment explicit; do not turn popularity or one review into universal fit |
-| A causal or explanatory claim | Evidence that tests alternatives, process records, experiments, longitudinal observation, informed analyses | Do not rewrite correlation, chronology, or participant belief as demonstrated causation |
+| `verified` | independently checked and supported | may carry a factual conclusion |
+| `qualified` | supported within a stated limit | keep the qualification next to the claim |
+| `contested` | credible support is unresolved or conflicting | present the disagreement; conclude nothing decisive |
+| `refuted` | the evidence does not support it | excluded from the report |
+| `attributed` | testimony or interpretation, not externally checkable | attribute explicitly; never evidence of prevalence |
+| `single-source` | background resting on one source | cite and attribute; not independently corroborated |
+| `unverified` | eligible but not checked | usable with explicit attribution and hedged language |
 
-Use first-party sources for what a person or organization says, publishes, or experiences.
-Do not assume they independently prove impact, superiority, or reception. Conversely, do
-not discard a participant account merely because it is informal when participant experience
-is the subject.
+Not being selected for verification is never a mark of quality. `single-source`
+does not outrank `unverified`, and neither may be presented as corroborated.
 
-Track **independence groups**, not only hostnames. Reposts, wire copies, affiliates, shared
-press releases, and reports based on the same dataset may represent one evidence lineage.
-Several sources can still be valuable for different observations even when they are not
-independent corroboration.
+## 2. Judge source fitness
 
-## Structured records
+Use the strongest available source for the claim:
 
-Use stable IDs within one run. IDs need only be deterministic and unambiguous, for example
-`lane-03`, `src-lane-03-02`, and `claim-lane-03-04`.
+1. primary record, official data, standard, or original research;
+2. high-quality scholarly synthesis or authoritative technical documentation;
+3. reputable specialist reporting or analysis;
+4. contemporaneous reporting, trade material, or institutional commentary;
+5. community or anecdotal material for experience and discovery, not universal
+   factual claims.
 
-### Source record
+Source class is not a universal ranking. A community post can be the primary source
+for what a participant said; it is not primary evidence for broad prevalence.
 
-```text
-SourceRecord
-- source_id
-- url
-- title
-- publisher
-- author
-- published_at
-- updated_at
-- accessed_at
-- evidence_type
-- proximity: direct | participant | observer | synthesis | unclear
-- fetch_status: fetched | partial | blocked | failed
-- independence_group
-- context
-- incentives_or_perspective[]
-- representativeness_notes[]
-- volatility_notes[]
-- caveats[]
-```
+Assess:
 
-Use empty values when metadata is not stated. Never infer an author or publication date from
-page styling or a search snippet. Keep the URL actually fetched; store a canonical URL only
-when the page establishes one or obvious tracking parameters can be removed safely.
+- directness: does the source actually support the proposition?
+- authority: does the author or institution have relevant competence?
+- independence: are apparently separate sources copying one origin?
+- date fitness: is the evidence current enough for the claim?
+- scope fitness: does the sample, jurisdiction, population, or period match?
+- incentives and missing context;
+- access stability and whether the citation is reader-verifiable.
 
-### Evidence item
+Use discovery pages to locate authoritative evidence. Do not cite a search snippet
+when the underlying source is available.
 
-```text
-EvidenceItem
-- evidence_id
-- source_id
-- atomic_claim
-- support_text
-- support_kind: verified_quote | grounded_paraphrase | direct_observation
-- locator
-- relationship: supports | contradicts | qualifies | contextualizes
-- claim_scope
-- caveats[]
-```
+## 3. Acquire proportionally
 
-`atomic_claim` should express one proposition. Split a sentence that mixes a measured fact,
-an interpretation, and a causal explanation.
+### Lane ceilings
 
-Use `verified_quote` only when the wording was checked against fetched source text. A
-grounded answer produced by `web_fetch` can support a paraphrase but is not automatically a
-quotation. For audio, video, or interactive material, record the timestamp, section, element,
-or other locator available to the acquisition tool.
+| Tier | Materially different searches | Fetches |
+| --- | ---: | ---: |
+| Focused | 4 | 6 |
+| Standard | 6 | 8 |
+| Extended | 8 | 12 |
 
-### Candidate and verified claims
+Ceilings are upper bounds, not quotas. Stop when:
+
+- every conclusion-driving claim in the lane has adequate direct support;
+- another source would merely repeat established background;
+- remaining uncertainty is unlikely to change the answer; or
+- the writing/audit reserve would be threatened.
+
+No source-count minimum applies. Prefer two independent strong sources for a
+disputed conclusion-driving claim when they are realistically available; do not
+manufacture independence by citing syndicated copies.
+
+### Failed-acquisition ledger
+
+Keep a compact shared ledger:
 
 ```text
-CandidateClaim
-- claim_id
-- lane_id
-- claim_text
-- materiality: conclusion_driving | supporting | contextual
-- evidence_ids[]
-- known_counterevidence_ids[]
-- caveats[]
+canonical URL | failure class | attempts | alternate tried | claim affected
 ```
+
+Canonicalize away the fragment and known tracking parameters, but **keep the rest
+of the query string**: `?report=2019` and `?report=2024` are different documents,
+and collapsing them mis-attributes citations.
+
+Under orchestration, a verifier receives its own lane's ledger, which is what
+prevents same-source retries. The cross-lane ledger is assembled after the research
+pipeline for the follow-up and escalation stages. Working sequentially, keep one
+ledger for the whole run.
+
+Terminal failures require zero same-source retries:
+
+- 403/404 or other access denial;
+- login, paywall, or robots restriction;
+- certificate or protocol failure;
+- unsupported or oversized content;
+- scanned/no-text content;
+- a source that requires prohibited or unavailable tooling.
+
+If the source could change a conclusion, try at most one obvious lawful accessible
+equivalent: an author manuscript, official mirror, archived official copy, or another
+source reporting the same primary evidence. If that attempt fails, record the gap.
+
+A transient timeout may be retried once. A second timeout is terminal.
+
+Do not:
+
+- repeat an identical query;
+- vary only protocol, fragment, query string, mirror endpoint, or download parameter
+  to create the appearance of a new attempt;
+- let a verifier revisit a URL or access strategy already marked terminal;
+- download and shell-convert a document merely because ordinary fetching failed; or
+- treat OCR output as strong evidence without checking the relevant passage.
+
+Focused and Standard runs never initiate OCR by default. Extended/high-stakes or
+explicitly exhaustive work may use one Browser **or** local conversion/OCR
+escalation—not both—only for an irreplaceable source that could change the answer.
+Bound the target and question before the attempt. Stop after failure and disclose
+the gap.
+
+## 4. Verify selectively
+
+Verification is for:
+
+- conclusion-driving claims;
+- disputed or surprising claims;
+- claims whose scope, date, or causal language may exceed the evidence;
+- conflicts between credible sources; and
+- pivotal translations or interpretations.
+
+Background claims with direct authoritative support do not need a wholesale second
+research pass.
+
+Every lane holding eligible claims is verified. Verification capacity is not
+rationed across lanes and none is held back for a possible follow-up: a report
+whose conclusion-driving claims went unchecked is worse than one that costs a few
+more bounded calls.
+
+A verifier receives:
+
+- the lane's summary, its selected claims, and only the evidence and source cards
+  those claims depend on;
+- the path to the lane's evidence dossier, when one exists;
+- the lane's failed-acquisition ledger; and
+- a small verification acquisition ceiling.
+
+It reads the dossier for depth rather than being handed the whole scout record.
+
+It returns a delta only:
+
+- verdict per claim: `supported`, `qualified`, `unsupported`, or `disputed`;
+- approved existing evidence IDs;
+- concise qualifications;
+- rejected evidence IDs and reason;
+- genuinely new sources/evidence; and
+- new failed acquisitions or gaps.
+
+It must not echo the scout record or broadly re-fetch every source. Independence
+means finding separate support for a material proposition, not mechanically
+repeating the same acquisition work.
+
+## 5. Handle disagreement honestly
+
+When credible sources disagree:
+
+1. identify the exact proposition in dispute;
+2. compare definitions, dates, jurisdiction, samples, and incentives;
+3. distinguish factual conflict from interpretive difference;
+4. prefer the source closest to the underlying event or data when appropriate;
+5. state what is established, what is probable, and what remains open.
+
+Do not collapse a live disagreement into false certainty. Do not give fringe claims
+equal weight merely because they exist.
+
+Calibrate language:
+
+- **Strong:** demonstrates, establishes, directly records.
+- **Moderate:** supports, indicates, is consistent with.
+- **Tentative:** suggests, may reflect, is plausibly explained by.
+- **Unresolved:** evidence is insufficient or credible sources disagree.
+
+## 6. Keep handoffs compact by writing evidence down
+
+Research cost grows when every stage reproduces full source cards, but compressing
+evidence into one-line paraphrases starves the drafter. Resolve the tension by
+separating depth from transport: write full-fidelity evidence to a file and pass
+paths.
+
+### Evidence dossiers
+
+When a session scratchpad is available, each scout writes a dossier alongside its
+compact record:
 
 ```text
-VerifiedClaim
-- claim_id
-- lane_id
-- final_claim_text
-- verdict: supported | partially_supported | contradicted | unverifiable
-- approved_evidence_ids[]
-- contradicting_evidence_ids[]
-- required_qualification
-- allowed_in_report
-- verification_notes
+<scratchpad>/deep-research/<run-slug>/lanes/<lane-key>.md
 ```
 
-Use categories rather than numeric confidence scores. A verifier should narrow a broad claim
-to what the evidence establishes, not merely lower its score.
+The dossier is where depth belongs — full bibliographic metadata, access status,
+and generous verbatim quotation with enough surrounding context for a later stage
+to judge directness, scope, and date fitness without refetching. Record rejected
+leads and the detail behind each failed acquisition too.
 
-### Verified lane result
+Downstream stages receive the path and read what they need. Verifiers add their own
+working notes next to the dossier. Nothing large travels through a stage's return
+value.
 
-```text
-VerifiedLane
-- lane_id
-- answer_to_subquestion
-- sources[]
-- evidence[]
-- verified_claims[]
-- rejected_claim_ids[]
-- unresolved_conflicts[]
-- gaps[]
-- failed_acquisition[]
-```
+This is additive. When no scratchpad is available or a worker cannot write one,
+every stage falls back to the inline compact records below and the run still
+completes; say so in the gaps rather than failing.
 
-A drafting worker receives only allowed verified claims and their approved evidence. Keep
-rejected items for the audit trail, not as writing material.
+Never write a deliverable to the scratchpad — it is throwaway by design. The report
+is written into the project at the end.
 
-### Coverage result
+### Scout record
 
-```text
-CoverageResult
-- facets[]:
-    facet
-    status: covered | partial | missing | conflicted
-    verified_claim_ids[]
-    explanation
-- cross_lane_conflicts[]
-- source_concentration_issues[]
-- perspective_gaps[]
-- temporal_gaps[]
-- follow_up_worthwhile
-- follow_up_tasks[]:
-    task_id
-    priority: high | medium | low
-    target_gap
-    queries[]
-    expected_decision_value
-- stop_reason
-```
+- lane ID and a short synthesis;
+- compact source cards: local ID, title, URL, publisher, date, type;
+- atomic evidence: local ID, claim, source ID, short quote/paraphrase;
+- candidate claims with importance and dispute flags;
+- failed acquisitions; and
+- unresolved gaps.
 
-Run follow-up only for high-value gaps with concrete queries whose resolution could alter
-the answer. Perspective diversity is relevant when the question concerns experiences,
-reception, or contested meaning; it is not a box-counting requirement for every task.
+### Verification delta
 
-### Audit issue
+- claim verdicts and approved evidence IDs;
+- qualifications and rejections;
+- only new sources/evidence;
+- new failures and remaining gaps; and
+- a short verifier synthesis.
 
-```text
-AuditIssue
-- issue_id
-- severity: critical | major | minor
-- dimension:
-    support | citation | provenance | freshness | source_fit |
-    representativeness | completeness | contradiction |
-    instruction_following | structure | repetition | readability
-- section_id
-- report_span
-- claim_id
-- source_ids[]
-- finding
-- required_fix
-```
+### Coverage input
 
-Critical and major evidence issues must be removed, qualified, or repaired from already
-approved evidence before delivery. A minor stylistic issue does not justify another research
-loop.
+- one short supported synthesis per lane;
+- a claim index with status and source IDs but **no evidence excerpts**;
+- source-class coverage;
+- dossier paths for anything that needs a closer look;
+- unresolved gaps and failed-source effects; and
+- the inferred target length and report profile needed to decide drafting shape.
 
-## Evidence interpretation
+Do not pass complete fetched text, search transcripts, duplicated source cards, or
+full evidence ledgers into coverage and audit prompts. Pass the path instead.
 
-### Match language to support
+### Drafting-shape decision
 
-- State directly observed or documented facts directly.
-- Attribute participant beliefs and first-party claims.
-- Label estimates, interpretations, and extrapolations.
-- Say "the available accounts disagree" when conflict remains.
-- Say "these examples show that this occurs" rather than "most users experience this" when
-  the evidence is a collection of examples.
-- Say "available evidence does not establish" rather than forcing a yes/no conclusion.
+The skill decides the drafting shape; do not ask the user to choose an
+implementation detail. A long report must never collapse back to a single drafting
+call merely because the stage that was supposed to propose an outline failed to
+return one; fall back to a deterministic outline and let the assembly pass turn it
+into reader-facing sections.
 
-### Preserve disagreement
+Use one drafting agent by default. Use bounded section drafting when:
 
-When sources conflict, inspect:
+- the inferred target is roughly 5,000 words or more; or
+- coverage analysis identifies at least two genuinely independent sections with
+  distinct claim sets whose parallel drafting improves clarity or context fit.
 
-- whether they define the subject or metric differently;
-- publication date, software version, place, population, or historical period;
-- direct access versus retelling;
-- sampling and missing observations;
-- financial, reputational, ideological, or community incentives; and
-- whether later sources copied an earlier error.
+Do not use section fan-out merely because research had multiple lanes. Lanes are
+evidence boundaries; report sections are reader-facing argument boundaries.
 
-Report what is agreed, each material version of the disagreement, which evidence is better
-positioned for the particular claim, and what remains unresolved. Do not average mutually
-incompatible accounts into a synthetic consensus.
+When section drafting is warranted:
 
-### Handle recency
+1. coverage returns a short outline, purpose, and supported claim IDs per section;
+2. draft the bounded sections in parallel using only their assigned claims;
+3. assemble the sections into one body, then
+4. build the bibliography from the assembled body, not from section-reported
+   source lists.
 
-Freshness is claim-dependent. A current price or policy may become stale in days; a
-first-person historical account does not become irrelevant because it is old. Record access
-dates for volatile pages and distinguish event date, publication date, update date, and
-retrospective recollection.
+With a scratchpad, each section is written to its own file and the assembly stage
+writes `report/body.md`: a title, an opening that answers the question early, the
+sections in order with reconciled transitions and normalized voice, and an
+evidence-calibrated conclusion. A long report must not be re-emitted as one giant
+JSON string; that is the most truncation-prone shape available.
 
-### Avoid source laundering
+Verify the delivered length against the target with `wc -w` rather than trusting an
+impression, and check both directions. A report materially shorter than the confirmed
+target gets one bounded expansion pass over its thinnest sections — adding evidence,
+mechanism, and concrete detail from the dossiers, never padding — and is then
+reassembled. One pass only: a short report that is honest still ships, with the
+shortfall disclosed. A report far longer than the target is a defect of a different
+kind: it disregarded the brief, so tighten it rather than disclosing it.
 
-Trace a claim back when many pages cite one original post, dataset, press release, or
-anonymous report. Cite the original when accessible, but keep independent analysis when it
-adds interpretation or testing. Do not make a claim appear corroborated by counting copies.
+## 7. Reader-fit report contract
 
-## Citation checks
+### Core invariants
 
-### Mechanical checks
+Every report must:
 
-- Every inline URL belongs to a fetched, approved `SourceRecord`.
-- No search-engine result, redirect wrapper, invented URL, or failed fetch is cited.
-- Every source in the Sources section is cited in the body.
-- Every cited source appears once in the Sources section.
-- Duplicate URLs and obvious copies are reconciled.
-- Source titles, authors, dates, and quotations are not invented.
-- A verbatim quotation has a checked span and locator where available.
-- Section writers cite only source IDs assigned to their sections.
-- The report contains every required section exactly once.
+- answer the research question early;
+- cite material factual claims with descriptive Markdown links;
+- distinguish sourced fact from synthesis or inference;
+- preserve material disagreement and uncertainty;
+- conclude only as strongly as the evidence allows; and
+- contain exactly one `## Sources` section with deduplicated sources actually cited
+  in the body.
 
-### Semantic checks
+Keep uncertainty next to the affected claim. Consolidate secondary caveats instead
+of repeating "the accessible evidence is limited" in every section. Do not expose
+research lanes, worker names, evidence IDs, audit verdicts, or retry history unless
+the user explicitly asks for methods.
 
-- Every conclusion-driving externally verifiable claim has nearby support.
-- The linked source supports the exact clause or sentence, not merely the topic.
-- A citation group collectively supports every material assertion before it.
-- Source type and representativeness match the scope of the prose.
-- Correlation, sequence, or testimony is not rewritten as established causation.
-- First-party claims are attributed and independently tested when the conclusion requires
-  more than what the party said.
-- Volatile evidence is not presented as current without a relevant date.
-- Disagreement is visible rather than silently resolved.
-- The strength of the conclusion matches the verified registry.
+That applies to recorded gaps too. A gap is read by a person, so name the missing
+evidence and why it matters — never a lane identifier, a claim or evidence ID, or the
+shape of an internal record. "Klibansky and Panofsky's study was reached only at
+second hand" is a disclosure; "lane-1/C11's second half needs the reception lanes" is
+leaked machinery. A reader-facing note is a short disclosure of what stayed
+unresolved, not a transcript of the research ledger.
 
-Good scoping:
+The user's requested format wins. Otherwise choose the closest profile below.
+
+### Historical, cultural, and humanities
+
+- Open with a clear thesis in natural prose.
+- Use a narrative, chronological, or thematic arc suited to the material.
+- Write a specific, engaging title and concrete period-appropriate headings.
+- Integrate interpretive disputes where they arise.
+- Use a brief, naturally titled note on gaps only if it changes how the history
+  should be read.
+- Do not default to headings named `Executive answer`, `Methods`, or `Limitations`.
+
+For a history of Saturnian magic, for example, prefer headings tied to periods,
+texts, and transformations over corporate or methodological labels. Evocative does
+not mean sensational: preserve ambiguity between documentary fact, later tradition,
+and modern reconstruction.
+
+### Product, market, and policy decision
+
+- Lead with the answer or decision frame.
+- Compare options on criteria that matter to the stated audience.
+- Explain trade-offs, recommendation, risks, and what would change the choice.
+- Use an executive summary when the decision-maker benefits from one.
+
+### Scientific, technical, and high-stakes
+
+- State scope and definitions precisely.
+- Explain method, evidence quality, and uncertainty where they affect
+  interpretation.
+- Distinguish association, mechanism, and causation.
+- Give limitations their own section when needed for safe use of the findings.
+
+### Community, trend, and experiential
+
+- Organize around observed patterns and participant voices.
+- Identify the sampled community and missing groups.
+- Treat anecdotes as experience evidence, not prevalence estimates.
+- State representativeness limits once clearly rather than as a disclaimer in every
+  paragraph.
+
+### Voice
+
+Match the user's register and the subject's texture. Prefer concrete nouns and
+active sentences. Avoid generic institutional phrases, audit-shaped headings, and
+inflated abstractions when plain language is more accurate.
+
+Do not:
+
+- imitate a living author;
+- manufacture scenes, quotations, or emotional certainty;
+- sensationalize cultural or religious material;
+- trade factual precision for color; or
+- force all discovered sources into the prose.
+
+## 8. Cite economically and immediately
+
+Use descriptive Markdown links near the supported claim:
 
 ```markdown
-The release notes mark offline sync as experimental in version 4.2
-([Project changelog](https://example.com/changelog-4-2)).
+The [official release notes](https://example.com/release) date the change to May.
 ```
 
-```markdown
-Several participants in the sampled forum threads described the change as making
-moderation harder; these accounts show a recurring concern in those threads, not the
-prevalence of that view across the whole community
-([Thread A](https://example.com/thread-a); [Thread B](https://example.com/thread-b)).
-```
+Avoid:
 
-```markdown
-In her interview, Lee remembered the 1998 meetup as the point when the name became common,
-while a surviving flyer uses it several months earlier
-([Interview](https://example.com/interview); [Archived flyer](https://example.com/flyer)).
-```
+- bare URLs in body prose;
+- one citation at the end of a paragraph containing several unrelated claims;
+- bibliography entries never cited in the body;
+- multiple citations that all derive from one origin; and
+- citation density that obscures the argument when one stronger source suffices.
 
-Bad scoping:
+The deterministic bibliography builder extracts URLs from the final body, resolves
+them against the canonical registry, and creates `## Sources`. Writer-reported
+source lists are advisory only.
 
-```markdown
-Users hated the change ([one forum comment](https://example.com/comment)).
-```
+Link extraction has to be exact, because a mis-parsed URL looks like an unsupported
+citation. It must honor balanced parentheses in a destination — Wikipedia's
+`Saturn_(mythology)` style is everywhere in historical research — skip images,
+inline code, and fenced blocks, tolerate an optional link title, and ignore
+anchors and mail links rather than reporting them as unknown sources.
 
-## Section-based reporting
+## 9. Audit proportionally
 
-Use this path for reports around 2,500 words or longer, with at least five substantive
-sections, or likely to exceed one response.
+Choose the audit mode deliberately rather than leaving it implicit: `combined` for
+Focused and ordinary Standard work, `dual` for Extended or high-stakes work, and
+`deterministic` only when no judgment-based audit is warranted.
 
-### Section plan
+One combined evidence/editorial audit is enough for Focused and ordinary Standard
+reports. It checks:
 
-```text
-SectionPlan
-- section_id
-- order
-- kind: framing | body | conclusion | limitations | methods
-- heading
-- purpose
-- questions_answered[]
-- target_words
-- assigned_claim_ids[]
-- assigned_source_ids[]
-- dependencies[]
-- adjacent_section_purposes[]
-- exclusions[]
-```
+- whether material claims are supported by cited registry sources;
+- whether claim strength matches the evidence;
+- whether disagreement and scope limits are represented fairly;
+- whether the answer addresses the settled brief; and
+- whether structure, headings, and voice fit the report profile.
 
-Every conclusion-driving claim should have one primary home. A claim may be referenced
-briefly elsewhere, but the outline must identify where it is explained and supported.
+Use two independent audits for Extended or high-stakes work: one evidence-focused
+and one reader/editorial-focused. Revise only when an audit identifies a material
+issue.
 
-### Section draft
+An independent closure review is justified only when high-stakes revision leaves an
+unresolved critical or major evidence issue. Deterministic checks—not agents—own:
 
-```text
-SectionDraft
-- section_id
-- heading
-- markdown
-- abstract
-- cited_source_ids[]
-- used_claim_ids[]
-- unresolved_gaps[]
-```
+- unknown citation URLs;
+- duplicate citation URLs or headings;
+- missing cited sources;
+- uncited bibliography entries;
+- empty sections;
+- malformed Markdown output; and
+- missing/empty output files.
 
-Draft body sections before framing. Each writer sees the full outline but only its assigned
-evidence. After the body barrier, write the executive answer, introduction, conclusion, and
-takeaways from body abstracts plus the verified registry. This prevents framing from
-promising conclusions that the body did not establish.
+If evidence cannot support a material claim, remove or narrow the claim and name
+the gap. More process is not a substitute for better evidence.
 
-Audit every section, including late sections, for support and citation. Run a global audit
-on the assembled draft for:
-
-- missing brief requirements;
-- duplicated explanations or examples;
-- terms used with inconsistent meanings;
-- unresolved cross-section contradictions;
-- conclusion claims absent from the body;
-- section order and transitions; and
-- disproportionate coverage.
-
-Assign global issues back to specific section IDs. Revise affected sections concurrently in
-one coordinated phase, then assemble in numeric order. Do not give a final assembler
-permission to add facts.
-
-## Default report contract
-
-Honor a user-provided structure. Otherwise use:
-
-```markdown
-# Specific report title
-
-**As of:** YYYY-MM-DD
-**Scope:** What was and was not researched.
-
-## Executive answer
-
-The direct answer, central evidence, and most important uncertainty.
-
-## Thematic finding
-
-Evidence-backed analysis with descriptive inline links.
-
-## Disagreements and uncertainty
-
-Material conflicts, perspective limits, and unresolved questions.
-
-## Conclusion
-
-An evidence-calibrated conclusion or recommendation.
-
-## Limitations
-
-Missing, inaccessible, volatile, or unrepresentative evidence and scope limits.
-
-## Methods
-
-A concise account of timeframe, evidence selection, and verification. Do not reveal
-private chain-of-thought or worker transcripts.
-
-## Sources
-
-- Publisher or author. “Title.” Date if stated. URL
-```
-
-Organize the report around the user's question, not the search process or worker names.
-Keep the methods note useful but short. Do not expose internal prompts, chain-of-thought,
-Gigacode scripts, or audit chatter in the reader-facing report.
-
-## Failure and degradation
-
-### Weak or failed search
-
-Try bounded reformulations using alternate terminology, date, place, participant language,
-source type, or a disconfirming frame. Search a known relevant site directly when useful.
-Stop when retries become repetitive. Record the gap instead of filling it from memory.
-
-### Blocked, paywalled, partial, or JavaScript-only source
-
-Prefer, in order:
-
-1. an accessible version from the same creator or publisher;
-2. an archive, transcript, repository copy, filing, dataset, abstract, or quoted primary
-   passage that can be verified;
-3. a different source positioned to support the same claim;
-4. a narrow Browser extraction when allowed; or
-5. an explicit limitation.
-
-Do not evade authentication, payment, robots controls, or technical access restrictions.
-
-### Volatile or deleted community material
-
-Record access date and available locator. Use a lawful archive only when its provenance is
-clear. Avoid quoting sensitive deleted material gratuitously. If context cannot be checked,
-do not use the item for a conclusion-driving claim.
-
-### User source constraints
-
-Honor allowlists and blocklists exactly. If they prevent adequate support, explain that
-before broadening. Never silently replace "only these sources" with a general web search.
-
-### Worker or schema failure
-
-Allow one bounded formatting repair that does not perform new research. If the result is
-still invalid, reject it and continue with the remaining verified evidence. Never infer a
-missing URL, quote, verdict, or source ID.
-
-### Budget exhaustion
-
-Preserve fetched evidence, verify conclusion-driving claims, and keep synthesis capacity.
-Drop lower-priority context and narrow the report. State which facets remain incomplete.
-
-### Unresolved evidence
-
-Return the best supported partial answer. Distinguish:
-
-- no evidence found;
-- evidence inaccessible;
-- evidence found but too weak;
-- credible sources in conflict; and
-- the question not answerable at the requested scope.
+A residual defect never justifies throwing the report away. Deliver it as a
+supported partial result with the unresolved issues named, and let the reader see
+what is unsettled. Discarding a finished report because a citation would not
+resolve serves nobody.
